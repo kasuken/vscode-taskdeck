@@ -1,0 +1,157 @@
+{
+  "name": "taskdeck",
+  "displayName": "TaskDeck",
+  "description": "A control center to manage and launch VS Code tasks.",
+  "version": "0.9.1",
+  "icon": "img/logo.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kasuken/vscode-taskdeck.git"
+  },
+  "license": "MIT",
+  "publisher": "emanuelebartolesi",
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "tasks",
+    "task runner",
+    "task manager",
+    "favorites",
+    "recents",
+    "quick pick",
+    "productivity",
+    "project",
+    "automation",
+    "vscode tasks",
+    "activity bar",
+    "side panel",
+    "run tasks",
+    "task explorer"
+  ],
+  "activationEvents": [
+    "onView:taskdeck.tasksView",
+    "onCommand:taskdeck.runTask",
+    "onCommand:taskdeck.refreshTasks",
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "taskdeck",
+          "title": "TaskDeck",
+          "icon": "$(list-tree)"
+        }
+      ]
+    },
+    "views": {
+      "taskdeck": [
+        {
+          "id": "taskdeck.tasksView",
+          "name": "Tasks"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "taskdeck.refreshTasks",
+        "title": "TaskDeck: Refresh Tasks",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "taskdeck.runTask",
+        "title": "TaskDeck: Run Task",
+        "icon": "$(play)"
+      },
+      {
+        "command": "taskdeck.toggleFavorite",
+        "title": "TaskDeck: Toggle Favorite",
+        "icon": "$(star)"
+      },
+      {
+        "command": "taskdeck.setFilter",
+        "title": "TaskDeck: Set Filter",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "taskdeck.runTaskQuickPick",
+        "title": "TaskDeck: Run Task…"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "taskdeck.refreshTasks",
+          "when": "view == taskdeck.tasksView",
+          "group": "navigation"
+        },
+        {
+          "command": "taskdeck.setFilter",
+          "when": "view == taskdeck.tasksView",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "taskdeck.runTask",
+          "when": "view == taskdeck.tasksView && viewItem == task",
+          "group": "inline@1"
+        },
+        {
+          "command": "taskdeck.toggleFavorite",
+          "when": "view == taskdeck.tasksView && viewItem == task",
+          "group": "inline@2"
+        },
+        {
+          "command": "taskdeck.toggleFavorite",
+          "when": "view == taskdeck.tasksView && viewItem == task",
+          "group": "favorites@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "taskdeck.refreshTasks"
+        },
+        {
+          "command": "taskdeck.runTask",
+          "when": "false"
+        },
+        {
+          "command": "taskdeck.toggleFavorite",
+          "when": "false"
+        },
+        {
+          "command": "taskdeck.setFilter"
+        },
+        {
+          "command": "taskdeck.runTaskQuickPick"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.106.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@typescript-eslint/eslint-plugin": "^8.39.0",
+    "@typescript-eslint/parser": "^8.39.0",
+    "eslint": "^9.32.0",
+    "typescript": "^5.9.2",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
