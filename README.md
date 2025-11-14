@@ -90,7 +90,7 @@ None at this time.
 
 ## Release Notes
 
-### 0.0.1
+### 0.9.0
 
 Initial release of TaskDeck with all V1 features:
 - Task Explorer side panel
