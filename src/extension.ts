@@ -53,10 +53,12 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   private favorites: Set<string> = new Set();
   private history: HistoryEntry[] = [];
   private filterText: string = '';
+  private taskbarPinned: Set<string> = new Set();
 
   constructor(private context: vscode.ExtensionContext) {
     this.loadFavorites();
     this.loadHistory();
+    this.loadTaskbarPinned();
   }
 
   refresh(): void {
@@ -362,6 +364,36 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   getHistory(): HistoryEntry[] {
     return this.history;
   }
+
+  async toggleTaskbarPin(taskModel: TaskItemModel): Promise<void> {
+    console.log('[TaskDeck] Toggling taskbar pin for task:', taskModel.id);
+    if (this.taskbarPinned.has(taskModel.id)) {
+      console.log('[TaskDeck] Removing from taskbar');
+      this.taskbarPinned.delete(taskModel.id);
+    } else {
+      console.log('[TaskDeck] Adding to taskbar');
+      this.taskbarPinned.add(taskModel.id);
+    }
+    await this.saveTaskbarPinned();
+    console.log('[TaskDeck] Taskbar pins saved');
+  }
+
+  isTaskbarPinned(taskId: string): boolean {
+    return this.taskbarPinned.has(taskId);
+  }
+
+  getTaskbarPinnedTasks(): TaskItemModel[] {
+    return this.tasks.filter(t => this.taskbarPinned.has(t.id));
+  }
+
+  private loadTaskbarPinned(): void {
+    const saved = this.context.globalState.get<string[]>('taskdeck.taskbarPinned', []);
+    this.taskbarPinned = new Set(saved);
+  }
+
+  private async saveTaskbarPinned(): Promise<void> {
+    await this.context.globalState.update('taskdeck.taskbarPinned', Array.from(this.taskbarPinned));
+  }
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -378,6 +410,32 @@ export function activate(context: vscode.ExtensionContext) {
   // Status bar item
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   let currentRunningTask: vscode.TaskExecution | undefined;
+
+  // Taskbar status bar items for pinned tasks
+  const taskbarStatusBarItems: Map<string, vscode.StatusBarItem> = new Map();
+
+  // Function to update taskbar status bar items
+  function updateTaskbarItems() {
+    // Clear existing items
+    taskbarStatusBarItems.forEach(item => item.dispose());
+    taskbarStatusBarItems.clear();
+
+    // Create new items for pinned tasks
+    const pinnedTasks = treeProvider.getTaskbarPinnedTasks();
+    pinnedTasks.forEach((task, index) => {
+      const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99 - index);
+      item.text = `$(play-circle) ${task.label}`;
+      item.tooltip = `Run: ${task.label}\nSource: ${task.source}${task.folderName ? `\nFolder: ${task.folderName}` : ''}\nRight-click to unpin`;
+      item.command = {
+        command: 'taskdeck.runTaskFromTaskbar',
+        title: 'Run Task',
+        arguments: [task.id]
+      };
+      item.show();
+      taskbarStatusBarItems.set(task.id, item);
+      context.subscriptions.push(item);
+    });
+  }
 
   // Register commands
   context.subscriptions.push(
@@ -456,6 +514,49 @@ export function activate(context: vscode.ExtensionContext) {
         } else {
           vscode.window.showInformationMessage('Filter cleared');
         }
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('taskdeck.sendToTaskbar', async (item: TaskTreeItem) => {
+      console.log('[TaskDeck] sendToTaskbar command invoked with item:', item);
+      
+      let taskModel: TaskItemModel | undefined;
+      
+      if (item && item.taskId) {
+        console.log('[TaskDeck] Looking up task by ID:', item.taskId);
+        taskModel = treeProvider.getTaskById(item.taskId);
+      }
+      
+      if (taskModel) {
+        console.log('[TaskDeck] Task model found:', taskModel.id);
+        await treeProvider.toggleTaskbarPin(taskModel);
+        updateTaskbarItems();
+        const isPinned = treeProvider.isTaskbarPinned(taskModel.id);
+        vscode.window.showInformationMessage(
+          `Task ${isPinned ? 'pinned to' : 'unpinned from'} taskbar: ${taskModel.label}`
+        );
+      } else {
+        console.log('[TaskDeck] No task model found');
+        vscode.window.showErrorMessage('No task selected');
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('taskdeck.runTaskFromTaskbar', async (taskId: string) => {
+      console.log('[TaskDeck] runTaskFromTaskbar command invoked for task ID:', taskId);
+      
+      const taskModel = treeProvider.getTaskById(taskId);
+      
+      if (taskModel) {
+        console.log('[TaskDeck] Executing task from taskbar:', taskModel.label);
+        await vscode.tasks.executeTask(taskModel.vscodeTask);
+        vscode.window.showInformationMessage(`Running task: ${taskModel.label}`);
+      } else {
+        console.log('[TaskDeck] Task not found');
+        vscode.window.showErrorMessage('Task not found');
       }
     })
   );
@@ -589,7 +690,10 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // Initial load
-  treeProvider.loadTasks().then(() => treeProvider.refresh());
+  treeProvider.loadTasks().then(() => {
+    treeProvider.refresh();
+    updateTaskbarItems();
+  });
 
   // Add to subscriptions
   context.subscriptions.push(treeView);

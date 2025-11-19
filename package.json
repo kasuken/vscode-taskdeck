@@ -2,7 +2,7 @@
   "name": "taskdeck",
   "displayName": "TaskDeck",
   "description": "A control center to manage and launch VS Code tasks.",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "icon": "img/logo.png",
   "repository": {
     "type": "git",
@@ -82,6 +82,11 @@
       {
         "command": "taskdeck.runTaskQuickPick",
         "title": "TaskDeck: Run Task…"
+      },
+      {
+        "command": "taskdeck.sendToTaskbar",
+        "title": "TaskDeck: Send to Taskbar",
+        "icon": "$(pin)"
       }
     ],
     "menus": {
@@ -109,9 +114,19 @@
           "group": "inline@2"
         },
         {
+          "command": "taskdeck.sendToTaskbar",
+          "when": "view == taskdeck.tasksView && viewItem == task",
+          "group": "inline@3"
+        },
+        {
           "command": "taskdeck.toggleFavorite",
           "when": "view == taskdeck.tasksView && viewItem == task",
           "group": "favorites@1"
+        },
+        {
+          "command": "taskdeck.sendToTaskbar",
+          "when": "view == taskdeck.tasksView && viewItem == task",
+          "group": "taskbar@1"
         }
       ],
       "commandPalette": [
@@ -131,6 +146,10 @@
         },
         {
           "command": "taskdeck.runTaskQuickPick"
+        },
+        {
+          "command": "taskdeck.sendToTaskbar",
+          "when": "false"
         }
       ]
     }
