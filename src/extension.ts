@@ -641,9 +641,10 @@ export function activate(context: vscode.ExtensionContext) {
         
         let taskModel: TaskItemModel | undefined;
         
-        if (item && item.taskId) {
-          console.log('[TaskDeck] Looking up task by ID:', item.taskId);
-          taskModel = treeProvider.getTaskById(item.taskId);
+        // Use taskModel directly from the TreeItem to avoid ID lookup issues
+        if (item && item.taskModel) {
+          console.log('[TaskDeck] Using taskModel from TreeItem:', item.taskModel.label);
+          taskModel = item.taskModel;
         }
         
         if (!taskModel) {
@@ -669,9 +670,10 @@ export function activate(context: vscode.ExtensionContext) {
       
       let taskModel: TaskItemModel | undefined;
       
-      if (item && item.taskId) {
-        console.log('[TaskDeck] Looking up task by ID:', item.taskId);
-        taskModel = treeProvider.getTaskById(item.taskId);
+      // Use taskModel directly from the TreeItem to avoid ID lookup issues
+      if (item && item.taskModel) {
+        console.log('[TaskDeck] Using taskModel from TreeItem:', item.taskModel.label);
+        taskModel = item.taskModel;
       }
       
       if (taskModel) {
@@ -712,9 +714,10 @@ export function activate(context: vscode.ExtensionContext) {
       
       let taskModel: TaskItemModel | undefined;
       
-      if (item && item.taskId) {
-        console.log('[TaskDeck] Looking up task by ID:', item.taskId);
-        taskModel = treeProvider.getTaskById(item.taskId);
+      // Use taskModel directly from the TreeItem to avoid ID lookup issues
+      if (item && item.taskModel) {
+        console.log('[TaskDeck] Using taskModel from TreeItem:', item.taskModel.label);
+        taskModel = item.taskModel;
       }
       
       if (taskModel) {

@@ -1,5 +1,9 @@
 # Change Log
 
+## [0.11.1] - 2025-12-13
+### Fixed
+- Fixed issue where clicking a task in the sidebar would run the wrong task (the first task from the category instead of the selected one). Commands now use the task reference directly instead of ID lookup.
+
 ## [0.11.0] - 2025-12-13
 ### Added
 - Dedicated "npm scripts" category that auto-detects scripts from package.json across the workspace.
