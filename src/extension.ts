@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 
 // Data models
 interface TaskItemModel {
@@ -6,7 +8,16 @@ interface TaskItemModel {
   label: string;
   source: string;
   folderName?: string;
+  workspacePath?: string;
   vscodeTask: vscode.Task;
+}
+
+interface NpmScript {
+  name: string;
+  script: string;
+  packageJsonPath: string;
+  folderName: string;
+  workspacePath: string;
 }
 
 interface HistoryEntry {
@@ -50,6 +61,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   readonly onDidChangeTreeData: vscode.Event<TaskTreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
 
   private tasks: TaskItemModel[] = [];
+  private npmScriptTasks: TaskItemModel[] = [];
   private favorites: Set<string> = new Set();
   private history: HistoryEntry[] = [];
   private filterText: string = '';
@@ -68,10 +80,96 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   async loadTasks(): Promise<void> {
     try {
       const allTasks = await vscode.tasks.fetchTasks();
-      this.tasks = allTasks.map(task => this.createTaskModel(task));
+      // Filter out built-in npm tasks since we load them separately with enhanced info
+      this.tasks = allTasks
+        .filter(task => task.source !== 'npm')
+        .map(task => this.createTaskModel(task));
+      
+      // Load npm scripts separately with enhanced workspace/folder info
+      await this.loadNpmScripts();
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to load tasks: ${error}`);
     }
+  }
+
+  async loadNpmScripts(): Promise<void> {
+    try {
+      this.npmScriptTasks = [];
+      const npmScripts = await this.findNpmScripts();
+      
+      for (const npmScript of npmScripts) {
+        const task = this.createNpmTask(npmScript);
+        const taskModel = this.createTaskModel(task);
+        taskModel.workspacePath = npmScript.workspacePath;
+        this.npmScriptTasks.push(taskModel);
+      }
+    } catch (error) {
+      console.error('Failed to load npm scripts:', error);
+    }
+  }
+
+  async findNpmScripts(): Promise<NpmScript[]> {
+    const npmScripts: NpmScript[] = [];
+    
+    if (!vscode.workspace.workspaceFolders) {
+      return npmScripts;
+    }
+
+    for (const folder of vscode.workspace.workspaceFolders) {
+      // Search for all package.json files in the workspace folder
+      const pattern = new vscode.RelativePattern(folder, '**/package.json');
+      const files = await vscode.workspace.findFiles(pattern, '**/node_modules/**');
+      
+      for (const file of files) {
+        try {
+          const content = await fs.promises.readFile(file.fsPath, 'utf8');
+          const packageJson = JSON.parse(content);
+          
+          if (packageJson.scripts) {
+            const packageDir = path.dirname(file.fsPath);
+            const relativePath = path.relative(folder.uri.fsPath, packageDir);
+            const folderName = relativePath || folder.name;
+            
+            for (const [scriptName, scriptCommand] of Object.entries(packageJson.scripts)) {
+              npmScripts.push({
+                name: scriptName,
+                script: scriptCommand as string,
+                packageJsonPath: file.fsPath,
+                folderName: folderName,
+                workspacePath: folder.uri.fsPath
+              });
+            }
+          }
+        } catch (error) {
+          console.error(`Failed to parse package.json at ${file.fsPath}:`, error);
+        }
+      }
+    }
+
+    return npmScripts;
+  }
+
+  createNpmTask(npmScript: NpmScript): vscode.Task {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.find(
+      folder => folder.uri.fsPath === npmScript.workspacePath
+    );
+    
+    const packageDir = path.dirname(npmScript.packageJsonPath);
+    const definition: vscode.TaskDefinition = {
+      type: 'npm',
+      script: npmScript.name,
+      path: packageDir
+    };
+
+    const task = new vscode.Task(
+      definition,
+      workspaceFolder || vscode.TaskScope.Workspace,
+      npmScript.name,
+      'npm script',
+      new vscode.ShellExecution(`npm run ${npmScript.name}`, { cwd: packageDir })
+    );
+
+    return task;
   }
 
   createTaskModel(task: vscode.Task): TaskItemModel {
@@ -82,6 +180,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       label: task.name,
       source: task.source,
       folderName,
+      workspacePath: undefined,
       vscodeTask: task
     };
   }
@@ -104,17 +203,19 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       }
 
       const filteredTasks = this.getFilteredTasks();
+      const filteredNpmScripts = this.getFilteredNpmScripts();
+      const allFilteredTasks = [...filteredTasks, ...filteredNpmScripts];
       const result: TaskTreeItem[] = [];
 
       // Create a map of task IDs for quick lookup
       const taskMap = new Map<string, TaskItemModel>();
-      filteredTasks.forEach(task => taskMap.set(task.id, task));
+      allFilteredTasks.forEach(task => taskMap.set(task.id, task));
 
       // Split into favorites and others
       const favoriteTasks: TaskItemModel[] = [];
       const nonFavoriteTasks: TaskItemModel[] = [];
 
-      filteredTasks.forEach(task => {
+      allFilteredTasks.forEach(task => {
         if (this.favorites.has(task.id)) {
           favoriteTasks.push(task);
         } else {
@@ -129,6 +230,14 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
         result.push(favGroup);
       }
 
+      // Pinned group
+      const pinnedTasks = allFilteredTasks.filter(t => this.taskbarPinned.has(t.id) && !this.favorites.has(t.id));
+      if (pinnedTasks.length > 0) {
+        const pinnedGroup = new TaskTreeItem('Pinned', vscode.TreeItemCollapsibleState.Expanded, 'group');
+        pinnedGroup.iconPath = new vscode.ThemeIcon('pinned');
+        result.push(pinnedGroup);
+      }
+
       // Recent group
       const recentTaskIds = this.history
         .slice()
@@ -139,7 +248,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 
       const recentTasks = recentTaskIds
         .map(id => taskMap.get(id))
-        .filter(t => t && !this.favorites.has(t.id)) as TaskItemModel[];
+        .filter(t => t && !this.favorites.has(t.id) && !this.taskbarPinned.has(t.id)) as TaskItemModel[];
 
       if (recentTasks.length > 0) {
         const recentGroup = new TaskTreeItem('Recent', vscode.TreeItemCollapsibleState.Expanded, 'group');
@@ -147,9 +256,22 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
         result.push(recentGroup);
       }
 
-      // Group other tasks by source
+      // npm scripts group (only show if there are npm scripts)
       const recentIds = new Set(recentTaskIds);
-      const otherTasks = nonFavoriteTasks.filter(t => !recentIds.has(t.id));
+      const pinnedIds = new Set(pinnedTasks.map(t => t.id));
+      
+      if (filteredNpmScripts.length > 0) {
+        const npmScriptsToShow = filteredNpmScripts.filter(t => !this.favorites.has(t.id) && !pinnedIds.has(t.id) && !recentIds.has(t.id));
+        
+        if (npmScriptsToShow.length > 0) {
+          const npmScriptsGroup = new TaskTreeItem('npm scripts', vscode.TreeItemCollapsibleState.Expanded, 'group');
+          npmScriptsGroup.iconPath = new vscode.ThemeIcon('package');
+          result.push(npmScriptsGroup);
+        }
+      }
+
+      // Group other tasks by source
+      const otherTasks = nonFavoriteTasks.filter(t => !pinnedIds.has(t.id) && !recentIds.has(t.id) && t.source !== 'npm script');
 
       if (otherTasks.length > 0) {
         // Group tasks by source type
@@ -181,14 +303,23 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
     } else if (element.itemType === 'group') {
       // Child level - show tasks within the group
       const filteredTasks = this.getFilteredTasks();
+      const filteredNpmScripts = this.getFilteredNpmScripts();
+      const allFilteredTasks = [...filteredTasks, ...filteredNpmScripts];
       const taskMap = new Map<string, TaskItemModel>();
-      filteredTasks.forEach(task => taskMap.set(task.id, task));
+      allFilteredTasks.forEach(task => taskMap.set(task.id, task));
 
       if (element.label === 'Favorites') {
-        const favoriteTasks = filteredTasks.filter(t => this.favorites.has(t.id));
+        const favoriteTasks = allFilteredTasks.filter(t => this.favorites.has(t.id));
         return favoriteTasks.map(task => {
           const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task);
           item.iconPath = new vscode.ThemeIcon('star-full');
+          return item;
+        });
+      } else if (element.label === 'Pinned') {
+        const pinnedTasks = allFilteredTasks.filter(t => this.taskbarPinned.has(t.id) && !this.favorites.has(t.id));
+        return pinnedTasks.map(task => {
+          const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task);
+          item.iconPath = new vscode.ThemeIcon('pinned');
           return item;
         });
       } else if (element.label === 'Recent') {
@@ -201,11 +332,51 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 
         const recentTasks = recentTaskIds
           .map(id => taskMap.get(id))
-          .filter(t => t && !this.favorites.has(t.id)) as TaskItemModel[];
+          .filter(t => t && !this.favorites.has(t.id) && !this.taskbarPinned.has(t.id)) as TaskItemModel[];
 
         return recentTasks.map(task => {
           const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task);
           item.iconPath = new vscode.ThemeIcon('history');
+          return item;
+        });
+      } else if (element.label === 'npm scripts') {
+        // Show npm script tasks
+        const recentTaskIds = this.history
+          .slice()
+          .reverse()
+          .map(h => h.taskId)
+          .filter((id, index, self) => self.indexOf(id) === index)
+          .slice(0, 10);
+        const recentIds = new Set(recentTaskIds);
+
+        const npmScriptTasks = filteredNpmScripts.filter(
+          t => !this.favorites.has(t.id) && !this.taskbarPinned.has(t.id) && !recentIds.has(t.id)
+        );
+
+        return npmScriptTasks.map(task => {
+          const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task);
+          item.iconPath = new vscode.ThemeIcon('package');
+          
+          // Enhanced tooltip with workspace and folder info
+          const tooltipParts = [
+            `${task.label}`,
+            `Source: ${task.source}`,
+          ];
+          if (task.folderName) {
+            tooltipParts.push(`Folder: ${task.folderName}`);
+          }
+          if (task.workspacePath) {
+            tooltipParts.push(`Workspace: ${task.workspacePath}`);
+          }
+          item.tooltip = tooltipParts.join('\n');
+          
+          // Enhanced description
+          const descriptionParts = [task.source];
+          if (task.folderName) {
+            descriptionParts.push(task.folderName);
+          }
+          item.description = descriptionParts.join(' - ');
+          
           return item;
         });
       } else {
@@ -220,7 +391,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
         const recentIds = new Set(recentTaskIds);
 
         const sourceTasks = filteredTasks.filter(
-          t => t.source === sourceName && !this.favorites.has(t.id) && !recentIds.has(t.id)
+          t => t.source === sourceName && !this.favorites.has(t.id) && !this.taskbarPinned.has(t.id) && !recentIds.has(t.id)
         );
 
         return sourceTasks.map(task => {
@@ -294,6 +465,22 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
     });
   }
 
+  private getFilteredNpmScripts(): TaskItemModel[] {
+    if (!this.filterText) {
+      return this.npmScriptTasks;
+    }
+
+    const lowerFilter = this.filterText.toLowerCase();
+    return this.npmScriptTasks.filter(task => {
+      return (
+        task.label.toLowerCase().includes(lowerFilter) ||
+        task.source.toLowerCase().includes(lowerFilter) ||
+        (task.folderName && task.folderName.toLowerCase().includes(lowerFilter)) ||
+        (task.workspacePath && task.workspacePath.toLowerCase().includes(lowerFilter))
+      );
+    });
+  }
+
   async setFilter(filterText: string): Promise<void> {
     this.filterText = filterText;
     this.refresh();
@@ -354,11 +541,11 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   }
 
   getTasks(): TaskItemModel[] {
-    return this.tasks;
+    return [...this.tasks, ...this.npmScriptTasks];
   }
 
   getTaskById(taskId: string): TaskItemModel | undefined {
-    return this.tasks.find(t => t.id === taskId);
+    return this.tasks.find(t => t.id === taskId) || this.npmScriptTasks.find(t => t.id === taskId);
   }
 
   getHistory(): HistoryEntry[] {
@@ -383,7 +570,8 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   }
 
   getTaskbarPinnedTasks(): TaskItemModel[] {
-    return this.tasks.filter(t => this.taskbarPinned.has(t.id));
+    const allTasks = [...this.tasks, ...this.npmScriptTasks];
+    return allTasks.filter(t => this.taskbarPinned.has(t.id));
   }
 
   private loadTaskbarPinned(): void {
@@ -580,9 +768,31 @@ export function activate(context: vscode.ExtensionContext) {
         items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
         items.push({ label: 'Favorites', kind: vscode.QuickPickItemKind.Separator });
         favoriteTasks.forEach(task => {
+          const descriptionParts = [task.source];
+          if (task.folderName) {
+            descriptionParts.push(task.folderName);
+          }
           items.push({
             label: `$(star-full) ${task.label}`,
-            description: task.source + (task.folderName ? ` - ${task.folderName}` : ''),
+            description: descriptionParts.join(' - '),
+            detail: task.id
+          });
+        });
+      }
+
+      // Add pinned tasks
+      const pinnedTasks = tasks.filter(t => treeProvider.isTaskbarPinned(t.id) && !treeProvider.isFavorite(t.id));
+      if (pinnedTasks.length > 0) {
+        items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
+        items.push({ label: 'Pinned', kind: vscode.QuickPickItemKind.Separator });
+        pinnedTasks.forEach(task => {
+          const descriptionParts = [task.source];
+          if (task.folderName) {
+            descriptionParts.push(task.folderName);
+          }
+          items.push({
+            label: `$(pinned) ${task.label}`,
+            description: descriptionParts.join(' - '),
             detail: task.id
           });
         });
@@ -598,15 +808,19 @@ export function activate(context: vscode.ExtensionContext) {
 
       const recentTasks = recentTaskIds
         .map(id => tasks.find(t => t.id === id))
-        .filter(t => t && !treeProvider.isFavorite(t.id)) as TaskItemModel[];
+        .filter(t => t && !treeProvider.isFavorite(t.id) && !treeProvider.isTaskbarPinned(t.id)) as TaskItemModel[];
 
       if (recentTasks.length > 0) {
         items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
         items.push({ label: 'Recent', kind: vscode.QuickPickItemKind.Separator });
         recentTasks.forEach(task => {
+          const descriptionParts = [task.source];
+          if (task.folderName) {
+            descriptionParts.push(task.folderName);
+          }
           items.push({
             label: `$(history) ${task.label}`,
-            description: task.source + (task.folderName ? ` - ${task.folderName}` : ''),
+            description: descriptionParts.join(' - '),
             detail: task.id
           });
         });
@@ -615,15 +829,46 @@ export function activate(context: vscode.ExtensionContext) {
       // Add all other tasks
       const favoriteIds = new Set(favoriteTasks.map(t => t.id));
       const recentIds = new Set(recentTasks.map(t => t.id));
-      const otherTasks = tasks.filter(t => !favoriteIds.has(t.id) && !recentIds.has(t.id));
+      const pinnedIds = new Set(pinnedTasks.map(t => t.id));
+      const otherTasks = tasks.filter(t => !favoriteIds.has(t.id) && !recentIds.has(t.id) && !pinnedIds.has(t.id));
 
-      if (otherTasks.length > 0) {
+      // Separate npm scripts from other tasks
+      const npmScriptTasks = otherTasks.filter(t => t.source === 'npm script');
+      const regularTasks = otherTasks.filter(t => t.source !== 'npm script');
+
+      // Add npm scripts section
+      if (npmScriptTasks.length > 0) {
+        items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
+        items.push({ label: 'npm scripts', kind: vscode.QuickPickItemKind.Separator });
+        npmScriptTasks.forEach(task => {
+          const descriptionParts = [task.source];
+          if (task.folderName) {
+            descriptionParts.push(task.folderName);
+          }
+          const detailParts = [task.id];
+          if (task.workspacePath) {
+            detailParts.push(`Workspace: ${task.workspacePath}`);
+          }
+          items.push({
+            label: `$(package) ${task.label}`,
+            description: descriptionParts.join(' - '),
+            detail: detailParts.join(' | ')
+          });
+        });
+      }
+
+      // Add other tasks
+      if (regularTasks.length > 0) {
         items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
         items.push({ label: 'All Tasks', kind: vscode.QuickPickItemKind.Separator });
-        otherTasks.forEach(task => {
+        regularTasks.forEach(task => {
+          const descriptionParts = [task.source];
+          if (task.folderName) {
+            descriptionParts.push(task.folderName);
+          }
           items.push({
             label: `$(play-circle) ${task.label}`,
-            description: task.source + (task.folderName ? ` - ${task.folderName}` : ''),
+            description: descriptionParts.join(' - '),
             detail: task.id
           });
         });
@@ -634,7 +879,8 @@ export function activate(context: vscode.ExtensionContext) {
       });
 
       if (selected && selected.detail) {
-        const task = tasks.find(t => t.id === selected.detail);
+        const taskId = selected.detail.split(' | ')[0]; // Extract task ID from detail
+        const task = tasks.find(t => t.id === taskId);
         if (task) {
           await vscode.tasks.executeTask(task.vscodeTask);
         }

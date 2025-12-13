@@ -57,6 +57,13 @@ TaskDeck provides a dedicated Activity Bar view container that brings all your V
    - Toggle Favorite
    - Quick access from tree view
 
+### New: npm Scripts Category
+
+- Automatically detects all `package.json` files in your workspace and lists their scripts in a dedicated **"npm scripts"** group.
+- Shows extra context for each script: **folder** (relative path inside the workspace) and **workspace path**.
+- Scripts are executable like any other task with one click.
+- Built-in VS Code npm tasks are filtered out to avoid duplicates — TaskDeck shows enhanced npm entries instead.
+
 ### New: Send to Taskbar
 
 - **Pin any task to the VS Code status bar (taskbar) for one-click access!**
@@ -64,6 +71,11 @@ TaskDeck provides a dedicated Activity Bar view container that brings all your V
 - Pinned tasks appear as buttons in the VS Code status bar. Click to run instantly.
 - Right-click a task or use the inline pin icon to toggle pin/unpin.
 - Pinned tasks persist across VS Code sessions.
+
+### New: Pinned Category in Tree
+
+- Pinned tasks now appear in a dedicated **Pinned** section in the tree, shown below **Favorites**.
+- Pinned tasks are excluded from **Recent** and other source groups to avoid duplication.
 
 ## Usage
 
@@ -114,6 +126,13 @@ Initial release of TaskDeck with all V1 features:
 - Command palette integration
 - Status bar integration
 - Context menu actions
+
+### 0.11.0
+
+- Added "npm scripts" category with workspace/folder context.
+- Added "Pinned" category in the tree below Favorites.
+- Quick Pick updated with sections for Favorites, Pinned, Recent, npm scripts, and All Tasks.
+- Filtered out built-in npm tasks to avoid duplicates.
 
 ### 0.10.0
 

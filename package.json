@@ -2,7 +2,7 @@
   "name": "taskdeck",
   "displayName": "TaskDeck",
   "description": "A control center to manage and launch VS Code tasks.",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "icon": "img/logo.png",
   "repository": {
     "type": "git",
