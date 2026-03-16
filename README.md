@@ -1,5 +1,5 @@
 <div align="center">
-   <img src="img/biglogo.png" alt="TaskDeck Logo" style="max-width: 320px; height: auto; margin-bottom: 1em;" />
+   <img src="img/logo.png" alt="TaskDeck Logo" style="max-width: 320px; height: auto; margin-bottom: 1em;" />
    <br/>
 </div>
 
