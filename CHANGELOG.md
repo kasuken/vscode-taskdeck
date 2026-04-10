@@ -1,5 +1,11 @@
 # Change Log
 
+## [0.12.0] - 2026-04-10
+### Added
+- Detect `build.xml` files across the workspace and extract Ant `<target>` entries as tasks (skips private targets starting with `-`).
+- New "Ant targets" group in the TaskDeck tree and Quick Pick; running an Ant target executes `ant <target>` from the build.xml directory.
+- Ant targets participate in Favorites, Pinned, Recent, and filtering features just like other tasks.
+
 ## [0.11.1] - 2025-12-13
 ### Fixed
 - Fixed issue where clicking a task in the sidebar would run the wrong task (the first task from the category instead of the selected one). Commands now use the task reference directly instead of ID lookup.

@@ -20,6 +20,14 @@ interface NpmScript {
   workspacePath: string;
 }
 
+interface AntTarget {
+  name: string;
+  description?: string;
+  buildXmlPath: string;
+  folderName: string;
+  workspacePath: string;
+}
+
 interface HistoryEntry {
   taskId: string;
   label: string;
@@ -62,6 +70,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 
   private tasks: TaskItemModel[] = [];
   private npmScriptTasks: TaskItemModel[] = [];
+  private antTargetTasks: TaskItemModel[] = [];
   private favorites: Set<string> = new Set();
   private history: HistoryEntry[] = [];
   private filterText: string = '';
@@ -87,6 +96,9 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       
       // Load npm scripts separately with enhanced workspace/folder info
       await this.loadNpmScripts();
+
+      // Load Ant build targets from build.xml files
+      await this.loadAntTargets();
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to load tasks: ${error}`);
     }
@@ -172,6 +184,93 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
     return task;
   }
 
+  async loadAntTargets(): Promise<void> {
+    try {
+      this.antTargetTasks = [];
+      const antTargets = await this.findAntTargets();
+
+      for (const antTarget of antTargets) {
+        const task = this.createAntTask(antTarget);
+        const taskModel = this.createTaskModel(task);
+        taskModel.workspacePath = antTarget.workspacePath;
+        this.antTargetTasks.push(taskModel);
+      }
+    } catch (error) {
+      console.error('Failed to load Ant targets:', error);
+    }
+  }
+
+  async findAntTargets(): Promise<AntTarget[]> {
+    const antTargets: AntTarget[] = [];
+
+    if (!vscode.workspace.workspaceFolders) {
+      return antTargets;
+    }
+
+    for (const folder of vscode.workspace.workspaceFolders) {
+      const pattern = new vscode.RelativePattern(folder, '**/build.xml');
+      const files = await vscode.workspace.findFiles(pattern, '**/node_modules/**');
+
+      for (const file of files) {
+        try {
+          const content = await fs.promises.readFile(file.fsPath, 'utf8');
+          const buildDir = path.dirname(file.fsPath);
+          const relativePath = path.relative(folder.uri.fsPath, buildDir);
+          const folderName = relativePath || folder.name;
+
+          const targetRegex = /<target\s+([^>]*)>/g;
+          let match;
+          while ((match = targetRegex.exec(content)) !== null) {
+            const attrs = match[1];
+            const nameMatch = attrs.match(/name="([^"]*)"/);
+            if (nameMatch) {
+              const targetName = nameMatch[1];
+              // Skip private targets (conventionally starting with -)
+              if (targetName.startsWith('-')) {
+                continue;
+              }
+              const descMatch = attrs.match(/description="([^"]*)"/);
+              antTargets.push({
+                name: targetName,
+                description: descMatch ? descMatch[1] : undefined,
+                buildXmlPath: file.fsPath,
+                folderName: folderName,
+                workspacePath: folder.uri.fsPath
+              });
+            }
+          }
+        } catch (error) {
+          console.error(`Failed to parse build.xml at ${file.fsPath}:`, error);
+        }
+      }
+    }
+
+    return antTargets;
+  }
+
+  createAntTask(antTarget: AntTarget): vscode.Task {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.find(
+      folder => folder.uri.fsPath === antTarget.workspacePath
+    );
+
+    const buildDir = path.dirname(antTarget.buildXmlPath);
+    const definition: vscode.TaskDefinition = {
+      type: 'ant',
+      target: antTarget.name,
+      path: buildDir
+    };
+
+    const task = new vscode.Task(
+      definition,
+      workspaceFolder || vscode.TaskScope.Workspace,
+      antTarget.name,
+      'ant',
+      new vscode.ShellExecution(`ant ${antTarget.name}`, { cwd: buildDir })
+    );
+
+    return task;
+  }
+
   createTaskModel(task: vscode.Task): TaskItemModel {
     const folderName = task.scope && typeof task.scope !== 'number' ? task.scope.name : undefined;
     const id = this.createId(task);
@@ -204,7 +303,8 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 
       const filteredTasks = this.getFilteredTasks();
       const filteredNpmScripts = this.getFilteredNpmScripts();
-      const allFilteredTasks = [...filteredTasks, ...filteredNpmScripts];
+      const filteredAntTargets = this.getFilteredAntTargets();
+      const allFilteredTasks = [...filteredTasks, ...filteredNpmScripts, ...filteredAntTargets];
       const result: TaskTreeItem[] = [];
 
       // Create a map of task IDs for quick lookup
@@ -270,8 +370,19 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
         }
       }
 
+      // Ant targets group (only show if there are Ant targets)
+      if (filteredAntTargets.length > 0) {
+        const antTargetsToShow = filteredAntTargets.filter(t => !this.favorites.has(t.id) && !pinnedIds.has(t.id) && !recentIds.has(t.id));
+
+        if (antTargetsToShow.length > 0) {
+          const antTargetsGroup = new TaskTreeItem('Ant targets', vscode.TreeItemCollapsibleState.Expanded, 'group');
+          antTargetsGroup.iconPath = new vscode.ThemeIcon('symbol-event');
+          result.push(antTargetsGroup);
+        }
+      }
+
       // Group other tasks by source
-      const otherTasks = nonFavoriteTasks.filter(t => !pinnedIds.has(t.id) && !recentIds.has(t.id) && t.source !== 'npm script');
+      const otherTasks = nonFavoriteTasks.filter(t => !pinnedIds.has(t.id) && !recentIds.has(t.id) && t.source !== 'npm script' && t.source !== 'ant');
 
       if (otherTasks.length > 0) {
         // Group tasks by source type
@@ -304,7 +415,8 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       // Child level - show tasks within the group
       const filteredTasks = this.getFilteredTasks();
       const filteredNpmScripts = this.getFilteredNpmScripts();
-      const allFilteredTasks = [...filteredTasks, ...filteredNpmScripts];
+      const filteredAntTargets = this.getFilteredAntTargets();
+      const allFilteredTasks = [...filteredTasks, ...filteredNpmScripts, ...filteredAntTargets];
       const taskMap = new Map<string, TaskItemModel>();
       allFilteredTasks.forEach(task => taskMap.set(task.id, task));
 
@@ -379,6 +491,46 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
           
           return item;
         });
+      } else if (element.label === 'Ant targets') {
+        // Show Ant target tasks
+        const recentTaskIds = this.history
+          .slice()
+          .reverse()
+          .map(h => h.taskId)
+          .filter((id, index, self) => self.indexOf(id) === index)
+          .slice(0, 10);
+        const recentIds = new Set(recentTaskIds);
+
+        const antTasks = filteredAntTargets.filter(
+          t => !this.favorites.has(t.id) && !this.taskbarPinned.has(t.id) && !recentIds.has(t.id)
+        );
+
+        return antTasks.map(task => {
+          const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task);
+          item.iconPath = new vscode.ThemeIcon('symbol-event');
+
+          // Enhanced tooltip with workspace and folder info
+          const tooltipParts = [
+            `${task.label}`,
+            `Source: ${task.source}`,
+          ];
+          if (task.folderName) {
+            tooltipParts.push(`Folder: ${task.folderName}`);
+          }
+          if (task.workspacePath) {
+            tooltipParts.push(`Workspace: ${task.workspacePath}`);
+          }
+          item.tooltip = tooltipParts.join('\n');
+
+          // Enhanced description
+          const descriptionParts = [task.source];
+          if (task.folderName) {
+            descriptionParts.push(task.folderName);
+          }
+          item.description = descriptionParts.join(' - ');
+
+          return item;
+        });
       } else {
         // This is a source group - show tasks for this source
         const sourceName = this.getSourceFromDisplayName(element.label);
@@ -415,6 +567,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       'shell': 'Shell',
       'process': 'Process',
       'extension': 'Extension',
+      'ant': 'Ant',
       'other': 'Other'
     };
     return displayNames[source] || source.charAt(0).toUpperCase() + source.slice(1);
@@ -430,6 +583,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       'Shell': 'shell',
       'Process': 'process',
       'Extension': 'extension',
+      'Ant': 'ant',
       'Other': 'other'
     };
     return sourceMap[displayName] || displayName.toLowerCase();
@@ -445,6 +599,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       'shell': 'terminal',
       'process': 'gear',
       'extension': 'extensions',
+      'ant': 'symbol-event',
       'other': 'question'
     };
     return new vscode.ThemeIcon(iconMap[source] || 'gear');
@@ -472,6 +627,22 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 
     const lowerFilter = this.filterText.toLowerCase();
     return this.npmScriptTasks.filter(task => {
+      return (
+        task.label.toLowerCase().includes(lowerFilter) ||
+        task.source.toLowerCase().includes(lowerFilter) ||
+        (task.folderName && task.folderName.toLowerCase().includes(lowerFilter)) ||
+        (task.workspacePath && task.workspacePath.toLowerCase().includes(lowerFilter))
+      );
+    });
+  }
+
+  private getFilteredAntTargets(): TaskItemModel[] {
+    if (!this.filterText) {
+      return this.antTargetTasks;
+    }
+
+    const lowerFilter = this.filterText.toLowerCase();
+    return this.antTargetTasks.filter(task => {
       return (
         task.label.toLowerCase().includes(lowerFilter) ||
         task.source.toLowerCase().includes(lowerFilter) ||
@@ -541,11 +712,11 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   }
 
   getTasks(): TaskItemModel[] {
-    return [...this.tasks, ...this.npmScriptTasks];
+    return [...this.tasks, ...this.npmScriptTasks, ...this.antTargetTasks];
   }
 
   getTaskById(taskId: string): TaskItemModel | undefined {
-    return this.tasks.find(t => t.id === taskId) || this.npmScriptTasks.find(t => t.id === taskId);
+    return this.tasks.find(t => t.id === taskId) || this.npmScriptTasks.find(t => t.id === taskId) || this.antTargetTasks.find(t => t.id === taskId);
   }
 
   getHistory(): HistoryEntry[] {
@@ -570,7 +741,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   }
 
   getTaskbarPinnedTasks(): TaskItemModel[] {
-    const allTasks = [...this.tasks, ...this.npmScriptTasks];
+    const allTasks = [...this.tasks, ...this.npmScriptTasks, ...this.antTargetTasks];
     return allTasks.filter(t => this.taskbarPinned.has(t.id));
   }
 
@@ -835,9 +1006,10 @@ export function activate(context: vscode.ExtensionContext) {
       const pinnedIds = new Set(pinnedTasks.map(t => t.id));
       const otherTasks = tasks.filter(t => !favoriteIds.has(t.id) && !recentIds.has(t.id) && !pinnedIds.has(t.id));
 
-      // Separate npm scripts from other tasks
+      // Separate npm scripts and ant targets from other tasks
       const npmScriptTasks = otherTasks.filter(t => t.source === 'npm script');
-      const regularTasks = otherTasks.filter(t => t.source !== 'npm script');
+      const antTargetTasks = otherTasks.filter(t => t.source === 'ant');
+      const regularTasks = otherTasks.filter(t => t.source !== 'npm script' && t.source !== 'ant');
 
       // Add npm scripts section
       if (npmScriptTasks.length > 0) {
@@ -854,6 +1026,27 @@ export function activate(context: vscode.ExtensionContext) {
           }
           items.push({
             label: `$(package) ${task.label}`,
+            description: descriptionParts.join(' - '),
+            detail: detailParts.join(' | ')
+          });
+        });
+      }
+
+      // Add Ant targets section
+      if (antTargetTasks.length > 0) {
+        items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
+        items.push({ label: 'Ant targets', kind: vscode.QuickPickItemKind.Separator });
+        antTargetTasks.forEach(task => {
+          const descriptionParts = [task.source];
+          if (task.folderName) {
+            descriptionParts.push(task.folderName);
+          }
+          const detailParts = [task.id];
+          if (task.workspacePath) {
+            detailParts.push(`Workspace: ${task.workspacePath}`);
+          }
+          items.push({
+            label: `$(symbol-event) ${task.label}`,
             description: descriptionParts.join(' - '),
             detail: detailParts.join(' | ')
           });
