@@ -71,7 +71,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   private tasks: TaskItemModel[] = [];
   private npmScriptTasks: TaskItemModel[] = [];
   private antTargetTasks: TaskItemModel[] = [];
-  private favorites: Set<string> = new Set();
+  private favorites: string[] = [];
   private history: HistoryEntry[] = [];
   private filterText: string = '';
   private taskbarPinned: Set<string> = new Set();
@@ -311,17 +311,12 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       const taskMap = new Map<string, TaskItemModel>();
       allFilteredTasks.forEach(task => taskMap.set(task.id, task));
 
-      // Split into favorites and others
-      const favoriteTasks: TaskItemModel[] = [];
-      const nonFavoriteTasks: TaskItemModel[] = [];
-
-      allFilteredTasks.forEach(task => {
-        if (this.favorites.has(task.id)) {
-          favoriteTasks.push(task);
-        } else {
-          nonFavoriteTasks.push(task);
-        }
-      });
+      // Split into favorites (in stored order) and others
+      const favoriteSet = new Set(this.favorites);
+      const favoriteTasks: TaskItemModel[] = this.favorites
+        .map(id => taskMap.get(id))
+        .filter((t): t is TaskItemModel => t !== undefined);
+      const nonFavoriteTasks: TaskItemModel[] = allFilteredTasks.filter(task => !favoriteSet.has(task.id));
 
       // Favorites group
       if (favoriteTasks.length > 0) {
@@ -331,7 +326,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       }
 
       // Pinned group
-      const pinnedTasks = allFilteredTasks.filter(t => this.taskbarPinned.has(t.id) && !this.favorites.has(t.id));
+      const pinnedTasks = allFilteredTasks.filter(t => this.taskbarPinned.has(t.id) && !this.favorites.includes(t.id));
       if (pinnedTasks.length > 0) {
         const pinnedGroup = new TaskTreeItem('Pinned', vscode.TreeItemCollapsibleState.Expanded, 'group');
         pinnedGroup.iconPath = new vscode.ThemeIcon('pinned');
@@ -348,7 +343,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 
       const recentTasks = recentTaskIds
         .map(id => taskMap.get(id))
-        .filter(t => t && !this.favorites.has(t.id) && !this.taskbarPinned.has(t.id)) as TaskItemModel[];
+        .filter(t => t && !this.favorites.includes(t.id) && !this.taskbarPinned.has(t.id)) as TaskItemModel[];
 
       if (recentTasks.length > 0) {
         const recentGroup = new TaskTreeItem('Recent', vscode.TreeItemCollapsibleState.Expanded, 'group');
@@ -361,7 +356,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       const pinnedIds = new Set(pinnedTasks.map(t => t.id));
       
       if (filteredNpmScripts.length > 0) {
-        const npmScriptsToShow = filteredNpmScripts.filter(t => !this.favorites.has(t.id) && !pinnedIds.has(t.id) && !recentIds.has(t.id));
+        const npmScriptsToShow = filteredNpmScripts.filter(t => !this.favorites.includes(t.id) && !pinnedIds.has(t.id) && !recentIds.has(t.id));
         
         if (npmScriptsToShow.length > 0) {
           const npmScriptsGroup = new TaskTreeItem('npm scripts', vscode.TreeItemCollapsibleState.Expanded, 'group');
@@ -372,7 +367,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 
       // Ant targets group (only show if there are Ant targets)
       if (filteredAntTargets.length > 0) {
-        const antTargetsToShow = filteredAntTargets.filter(t => !this.favorites.has(t.id) && !pinnedIds.has(t.id) && !recentIds.has(t.id));
+        const antTargetsToShow = filteredAntTargets.filter(t => !this.favorites.includes(t.id) && !pinnedIds.has(t.id) && !recentIds.has(t.id));
 
         if (antTargetsToShow.length > 0) {
           const antTargetsGroup = new TaskTreeItem('Ant targets', vscode.TreeItemCollapsibleState.Expanded, 'group');
@@ -421,14 +416,17 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       allFilteredTasks.forEach(task => taskMap.set(task.id, task));
 
       if (element.label === 'Favorites') {
-        const favoriteTasks = allFilteredTasks.filter(t => this.favorites.has(t.id));
+        const favoriteTasks = this.favorites
+          .map(id => taskMap.get(id))
+          .filter((t): t is TaskItemModel => t !== undefined);
         return favoriteTasks.map(task => {
           const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task);
+          item.contextValue = 'favoriteTask';
           item.iconPath = new vscode.ThemeIcon('star-full');
           return item;
         });
       } else if (element.label === 'Pinned') {
-        const pinnedTasks = allFilteredTasks.filter(t => this.taskbarPinned.has(t.id) && !this.favorites.has(t.id));
+        const pinnedTasks = allFilteredTasks.filter(t => this.taskbarPinned.has(t.id) && !this.favorites.includes(t.id));
         return pinnedTasks.map(task => {
           const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task);
           item.iconPath = new vscode.ThemeIcon('pinned');
@@ -444,7 +442,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 
         const recentTasks = recentTaskIds
           .map(id => taskMap.get(id))
-          .filter(t => t && !this.favorites.has(t.id) && !this.taskbarPinned.has(t.id)) as TaskItemModel[];
+          .filter(t => t && !this.favorites.includes(t.id) && !this.taskbarPinned.has(t.id)) as TaskItemModel[];
 
         return recentTasks.map(task => {
           const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task);
@@ -462,7 +460,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
         const recentIds = new Set(recentTaskIds);
 
         const npmScriptTasks = filteredNpmScripts.filter(
-          t => !this.favorites.has(t.id) && !this.taskbarPinned.has(t.id) && !recentIds.has(t.id)
+          t => !this.favorites.includes(t.id) && !this.taskbarPinned.has(t.id) && !recentIds.has(t.id)
         );
 
         return npmScriptTasks.map(task => {
@@ -502,7 +500,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
         const recentIds = new Set(recentTaskIds);
 
         const antTasks = filteredAntTargets.filter(
-          t => !this.favorites.has(t.id) && !this.taskbarPinned.has(t.id) && !recentIds.has(t.id)
+          t => !this.favorites.includes(t.id) && !this.taskbarPinned.has(t.id) && !recentIds.has(t.id)
         );
 
         return antTasks.map(task => {
@@ -543,7 +541,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
         const recentIds = new Set(recentTaskIds);
 
         const sourceTasks = filteredTasks.filter(
-          t => t.source === sourceName && !this.favorites.has(t.id) && !this.taskbarPinned.has(t.id) && !recentIds.has(t.id)
+          t => t.source === sourceName && !this.favorites.includes(t.id) && !this.taskbarPinned.has(t.id) && !recentIds.has(t.id)
         );
 
         return sourceTasks.map(task => {
@@ -659,12 +657,13 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 
   async toggleFavorite(taskModel: TaskItemModel): Promise<void> {
     console.log('[TaskDeck] Toggling favorite for task:', taskModel.id);
-    if (this.favorites.has(taskModel.id)) {
+    const index = this.favorites.indexOf(taskModel.id);
+    if (index !== -1) {
       console.log('[TaskDeck] Removing from favorites');
-      this.favorites.delete(taskModel.id);
+      this.favorites.splice(index, 1);
     } else {
       console.log('[TaskDeck] Adding to favorites');
-      this.favorites.add(taskModel.id);
+      this.favorites.push(taskModel.id);
     }
     await this.saveFavorites();
     console.log('[TaskDeck] Favorites saved, refreshing tree');
@@ -672,7 +671,39 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   }
 
   isFavorite(taskId: string): boolean {
-    return this.favorites.has(taskId);
+    return this.favorites.includes(taskId);
+  }
+
+  async moveFavoriteUp(taskId: string): Promise<void> {
+    const index = this.favorites.indexOf(taskId);
+    if (index > 0) {
+      [this.favorites[index - 1], this.favorites[index]] = [this.favorites[index], this.favorites[index - 1]];
+      await this.saveFavorites();
+      this.refresh();
+    }
+  }
+
+  async moveFavoriteDown(taskId: string): Promise<void> {
+    const index = this.favorites.indexOf(taskId);
+    if (index !== -1 && index < this.favorites.length - 1) {
+      [this.favorites[index], this.favorites[index + 1]] = [this.favorites[index + 1], this.favorites[index]];
+      await this.saveFavorites();
+      this.refresh();
+    }
+  }
+
+  async reorderFavorite(taskId: string, targetTaskId: string): Promise<void> {
+    const fromIndex = this.favorites.indexOf(taskId);
+    if (fromIndex === -1) { return; }
+    this.favorites.splice(fromIndex, 1);
+    const toIndex = this.favorites.indexOf(targetTaskId);
+    if (toIndex === -1) {
+      this.favorites.push(taskId);
+    } else {
+      this.favorites.splice(toIndex, 0, taskId);
+    }
+    await this.saveFavorites();
+    this.refresh();
   }
 
   addToHistory(taskId: string, label: string, exitCode?: number): void {
@@ -695,12 +726,11 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   }
 
   private loadFavorites(): void {
-    const saved = this.context.globalState.get<string[]>('taskdeck.favorites', []);
-    this.favorites = new Set(saved);
+    this.favorites = this.context.globalState.get<string[]>('taskdeck.favorites', []);
   }
 
   private async saveFavorites(): Promise<void> {
-    await this.context.globalState.update('taskdeck.favorites', Array.from(this.favorites));
+    await this.context.globalState.update('taskdeck.favorites', this.favorites);
   }
 
   private loadHistory(): void {
@@ -755,15 +785,44 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   }
 }
 
+const FAVORITE_MIME_TYPE = 'application/vnd.code.tree.taskdeck.favorite';
+
+class FavoriteDragAndDropController implements vscode.TreeDragAndDropController<TaskTreeItem> {
+  readonly dropMimeTypes = [FAVORITE_MIME_TYPE];
+  readonly dragMimeTypes = [FAVORITE_MIME_TYPE];
+
+  constructor(private treeProvider: TaskTreeProvider) {}
+
+  handleDrag(source: readonly TaskTreeItem[], dataTransfer: vscode.DataTransfer): void {
+    const favoriteItem = source.find(s => s.contextValue === 'favoriteTask' && s.taskModel);
+    if (favoriteItem?.taskModel) {
+      dataTransfer.set(FAVORITE_MIME_TYPE, new vscode.DataTransferItem(favoriteItem.taskModel.id));
+    }
+  }
+
+  async handleDrop(target: TaskTreeItem | undefined, dataTransfer: vscode.DataTransfer): Promise<void> {
+    const draggedId = dataTransfer.get(FAVORITE_MIME_TYPE)?.value;
+    if (!draggedId || !target?.taskModel || target.contextValue !== 'favoriteTask') {
+      return;
+    }
+    if (draggedId === target.taskModel.id) {
+      return;
+    }
+    await this.treeProvider.reorderFavorite(draggedId, target.taskModel.id);
+  }
+}
+
 export function activate(context: vscode.ExtensionContext) {
   console.log('TaskDeck extension is now active!');
 
   // Create the tree data provider
   const treeProvider = new TaskTreeProvider(context);
 
-  // Create the tree view
+  // Create the tree view with drag-and-drop for favorite reordering
+  const dragAndDropController = new FavoriteDragAndDropController(treeProvider);
   const treeView = vscode.window.createTreeView('taskdeck.tasksView', {
-    treeDataProvider: treeProvider
+    treeDataProvider: treeProvider,
+    dragAndDropController
   });
 
   // Status bar item
@@ -802,6 +861,22 @@ export function activate(context: vscode.ExtensionContext) {
       await treeProvider.loadTasks();
       treeProvider.refresh();
       vscode.window.showInformationMessage('Tasks refreshed');
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('taskdeck.moveFavoriteUp', async (item: TaskTreeItem) => {
+      if (item?.taskModel) {
+        await treeProvider.moveFavoriteUp(item.taskModel.id);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('taskdeck.moveFavoriteDown', async (item: TaskTreeItem) => {
+      if (item?.taskModel) {
+        await treeProvider.moveFavoriteDown(item.taskModel.id);
+      }
     })
   );
 

@@ -1,5 +1,13 @@
 # Change Log
 
+## [0.13.0] - 2026-04-10
+### Added
+- Reorder favorites: use the arrow-up / arrow-down inline buttons to move favorites, or drag-and-drop them directly in the tree.
+- Favorites now preserve insertion order and display in that order.
+
+### Fixed
+- Added `"node"` and `"mocha"` to `tsconfig.json` `types` field, fixing "Cannot find name 'console'" and missing test-runner type errors.
+
 ## [0.12.0] - 2026-04-10
 ### Added
 - Detect `build.xml` files across the workspace and extract Ant `<target>` entries as tasks (skips private targets starting with `-`).

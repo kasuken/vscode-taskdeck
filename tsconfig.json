@@ -3,6 +3,10 @@
 		"module": "Node16",
 		"target": "ES2022",
 		"outDir": "out",
+		"types": [
+			"node",
+			"mocha"
+		],
 		"lib": [
 			"ES2022"
 		],

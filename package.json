@@ -2,7 +2,7 @@
   "name": "taskdeck",
   "displayName": "TaskDeck",
   "description": "A control center to manage and launch VS Code tasks.",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "icon": "img/logo.png",
   "repository": {
     "type": "git",
@@ -87,6 +87,16 @@
         "command": "taskdeck.sendToTaskbar",
         "title": "TaskDeck: Send to Taskbar",
         "icon": "$(pin)"
+      },
+      {
+        "command": "taskdeck.moveFavoriteUp",
+        "title": "TaskDeck: Move Favorite Up",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "taskdeck.moveFavoriteDown",
+        "title": "TaskDeck: Move Favorite Down",
+        "icon": "$(arrow-down)"
       }
     ],
     "menus": {
@@ -119,6 +129,31 @@
           "group": "inline@3"
         },
         {
+          "command": "taskdeck.runTask",
+          "when": "view == taskdeck.tasksView && viewItem == favoriteTask",
+          "group": "inline@1"
+        },
+        {
+          "command": "taskdeck.moveFavoriteUp",
+          "when": "view == taskdeck.tasksView && viewItem == favoriteTask",
+          "group": "inline@2"
+        },
+        {
+          "command": "taskdeck.moveFavoriteDown",
+          "when": "view == taskdeck.tasksView && viewItem == favoriteTask",
+          "group": "inline@3"
+        },
+        {
+          "command": "taskdeck.toggleFavorite",
+          "when": "view == taskdeck.tasksView && viewItem == favoriteTask",
+          "group": "inline@4"
+        },
+        {
+          "command": "taskdeck.sendToTaskbar",
+          "when": "view == taskdeck.tasksView && viewItem == favoriteTask",
+          "group": "inline@5"
+        },
+        {
           "command": "taskdeck.toggleFavorite",
           "when": "view == taskdeck.tasksView && viewItem == task",
           "group": "favorites@1"
@@ -126,6 +161,26 @@
         {
           "command": "taskdeck.sendToTaskbar",
           "when": "view == taskdeck.tasksView && viewItem == task",
+          "group": "taskbar@1"
+        },
+        {
+          "command": "taskdeck.toggleFavorite",
+          "when": "view == taskdeck.tasksView && viewItem == favoriteTask",
+          "group": "favorites@1"
+        },
+        {
+          "command": "taskdeck.moveFavoriteUp",
+          "when": "view == taskdeck.tasksView && viewItem == favoriteTask",
+          "group": "reorder@1"
+        },
+        {
+          "command": "taskdeck.moveFavoriteDown",
+          "when": "view == taskdeck.tasksView && viewItem == favoriteTask",
+          "group": "reorder@2"
+        },
+        {
+          "command": "taskdeck.sendToTaskbar",
+          "when": "view == taskdeck.tasksView && viewItem == favoriteTask",
           "group": "taskbar@1"
         }
       ],
@@ -149,6 +204,14 @@
         },
         {
           "command": "taskdeck.sendToTaskbar",
+          "when": "false"
+        },
+        {
+          "command": "taskdeck.moveFavoriteUp",
+          "when": "false"
+        },
+        {
+          "command": "taskdeck.moveFavoriteDown",
           "when": "false"
         }
       ]
