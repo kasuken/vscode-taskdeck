@@ -1,5 +1,9 @@
 # Change Log
 
+## [0.14.0] - 2026-04-10
+### Added
+- Added configuration `taskdeck.excludeSources` (array of source names) to hide tasks by source (for example, `["extension"]` to hide extension-contributed tasks).
+
 ## [0.13.0] - 2026-04-10
 ### Added
 - Reorder favorites: use the arrow-up / arrow-down inline buttons to move favorites, or drag-and-drop them directly in the tree.

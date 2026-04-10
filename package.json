@@ -2,7 +2,7 @@
   "name": "taskdeck",
   "displayName": "TaskDeck",
   "description": "A control center to manage and launch VS Code tasks.",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "icon": "img/logo.png",
   "repository": {
     "type": "git",
@@ -57,6 +57,19 @@
           "name": "Tasks"
         }
       ]
+    },
+    "configuration": {
+      "title": "TaskDeck",
+      "properties": {
+        "taskdeck.excludeSources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "List of task source types to hide from the task list (e.g. \"extension\", \"shell\", \"Workspace\"). Use this to hide tasks automatically created by other extensions."
+        }
+      }
     },
     "commands": [
       {

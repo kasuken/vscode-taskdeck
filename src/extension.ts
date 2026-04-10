@@ -603,13 +603,22 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
     return new vscode.ThemeIcon(iconMap[source] || 'gear');
   }
 
+  private getExcludedSources(): Set<string> {
+    const config = vscode.workspace.getConfiguration('taskdeck');
+    const excluded = config.get<string[]>('excludeSources', []);
+    return new Set(excluded.map(s => s.toLowerCase()));
+  }
+
   private getFilteredTasks(): TaskItemModel[] {
+    const excludedSources = this.getExcludedSources();
+    let result = this.tasks.filter(task => !excludedSources.has(task.source.toLowerCase()));
+
     if (!this.filterText) {
-      return this.tasks;
+      return result;
     }
 
     const lowerFilter = this.filterText.toLowerCase();
-    return this.tasks.filter(task => {
+    return result.filter(task => {
       return (
         task.label.toLowerCase().includes(lowerFilter) ||
         task.source.toLowerCase().includes(lowerFilter) ||
@@ -619,12 +628,15 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   }
 
   private getFilteredNpmScripts(): TaskItemModel[] {
+    const excludedSources = this.getExcludedSources();
+    let result = this.npmScriptTasks.filter(task => !excludedSources.has(task.source.toLowerCase()));
+
     if (!this.filterText) {
-      return this.npmScriptTasks;
+      return result;
     }
 
     const lowerFilter = this.filterText.toLowerCase();
-    return this.npmScriptTasks.filter(task => {
+    return result.filter(task => {
       return (
         task.label.toLowerCase().includes(lowerFilter) ||
         task.source.toLowerCase().includes(lowerFilter) ||
@@ -635,12 +647,15 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   }
 
   private getFilteredAntTargets(): TaskItemModel[] {
+    const excludedSources = this.getExcludedSources();
+    let result = this.antTargetTasks.filter(task => !excludedSources.has(task.source.toLowerCase()));
+
     if (!this.filterText) {
-      return this.antTargetTasks;
+      return result;
     }
 
     const lowerFilter = this.filterText.toLowerCase();
-    return this.antTargetTasks.filter(task => {
+    return result.filter(task => {
       return (
         task.label.toLowerCase().includes(lowerFilter) ||
         task.source.toLowerCase().includes(lowerFilter) ||
