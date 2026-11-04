@@ -63,6 +63,23 @@ TaskDeck provides a dedicated Activity Bar view container that brings all your V
 - Shows extra context for each script: **folder** (relative path inside the workspace) and **workspace path**.
 - Scripts are executable like any other task with one click.
 - Built-in VS Code npm tasks are filtered out to avoid duplicates — TaskDeck shows enhanced npm entries instead.
+- Task lists refresh automatically when workspace task files, package manifests, Ant build files, or workspace folders change.
+- Script execution honors a package's `packageManager` field or the nearest npm, pnpm, Yarn, or Bun lockfile (falling back to npm).
+- Scripts are grouped by workspace and package so identically named scripts are easy to tell apart.
+
+### Running Tasks and History
+
+- Active executions appear in a **Running** group, including multiple concurrent runs.
+- Stop or restart a running task from its row actions.
+- Focus the task's terminal from the running task menu. If VS Code does not expose a matching task terminal, TaskDeck focuses the active terminal.
+- History records one entry per run with its outcome, exit code, completion time, and duration.
+- **Open Task Definition** opens the corresponding `package.json`, `build.xml`, or workspace `tasks.json` when available.
+
+### Filtering
+
+- The filter searches task name, source, package/folder, and workspace.
+- While a filter is active, use the close icon in the view title or **TaskDeck: Clear Filter** to clear it.
+- Routine actions such as running a task, pinning, and favoriting do not interrupt with informational popups.
 
 ### New: Send to Taskbar
 
@@ -80,7 +97,7 @@ TaskDeck provides a dedicated Activity Bar view container that brings all your V
 ## Usage
 
 1. Click the TaskDeck icon in the Activity Bar to open the side panel
-2. Browse tasks organized by Favorites, Recent, and All Tasks
+2. Browse tasks organized by Running, Favorites, Pinned, Recent, and task source
 3. Use the **inline icons** next to each task:
    - ▶️ Run Task
    - ★ Toggle Favorite
@@ -96,9 +113,14 @@ TaskDeck provides a dedicated Activity Bar view container that brings all your V
 - `TaskDeck: Refresh Tasks` - Reload all tasks from workspace
 - `TaskDeck: Run Task…` - Open quick pick to select and run a task
 - `TaskDeck: Set Filter` - Filter visible tasks
+- `TaskDeck: Clear Filter` - Clear the active filter
 - `TaskDeck: Toggle Favorite` - Add/remove task from favorites
 - `TaskDeck: Run Task` - Run a specific task (context menu)
 - `TaskDeck: Send to Taskbar` - Pin/unpin a task to the VS Code status bar for quick access
+- `TaskDeck: Stop Running Task` - Stop a selected running task
+- `TaskDeck: Restart Running Task` - Restart a selected running task
+- `TaskDeck: Focus Task Terminal` - Focus the selected running task's terminal
+- `TaskDeck: Open Task Definition` - Open the source file for a task when available
 
 ## Requirements
 
@@ -109,6 +131,10 @@ TaskDeck provides a dedicated Activity Bar view container that brings all your V
 This extension stores data in VS Code's global state:
 - `taskdeck.favorites` - List of favorite task IDs
 - `taskdeck.history` - Recent task execution history (last 20 entries)
+- `taskdeck.taskbarPinned` - List of task IDs pinned to the status bar
+
+The `taskdeck.excludeSources` setting applies consistently to the tree, Quick Pick, and pinned status bar items.
+Npm scripts use their package's `packageManager` field first, then the nearest recognized lockfile, and finally npm.
 
 ## Known Issues
 

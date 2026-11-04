@@ -9,12 +9,17 @@ interface TaskItemModel {
   source: string;
   folderName?: string;
   workspacePath?: string;
+  packageManager?: PackageManager;
+  definitionUri?: vscode.Uri;
   vscodeTask: vscode.Task;
 }
+
+type PackageManager = 'npm' | 'pnpm' | 'yarn' | 'bun';
 
 interface NpmScript {
   name: string;
   script: string;
+  packageManager: PackageManager;
   packageJsonPath: string;
   folderName: string;
   workspacePath: string;
@@ -33,6 +38,109 @@ interface HistoryEntry {
   label: string;
   runAt: number;
   exitCode?: number;
+  durationMs?: number;
+  status?: 'running' | 'succeeded' | 'failed' | 'terminated' | 'interrupted' | 'completed';
+}
+
+interface RunningTask {
+  id: number;
+  execution: vscode.TaskExecution;
+  task: TaskItemModel;
+  startedAt: number;
+  historyEntry: HistoryEntry;
+}
+
+type TaskGroupKind = 'npmScripts' | 'npmWorkspace' | 'npmPackage' | 'antTargets' | 'source' | 'running';
+
+interface TaskQuickPickItem extends vscode.QuickPickItem {
+  taskId?: string;
+}
+
+function sortTaskDefinition(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(item => sortTaskDefinition(item));
+  }
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+        .map(([key, item]) => [key, sortTaskDefinition(item)])
+    );
+  }
+  return value;
+}
+
+export function createStableTaskId(task: vscode.Task): string {
+  const workspaceFolder = task.scope && typeof task.scope !== 'number' ? task.scope : undefined;
+  const scope = workspaceFolder?.uri.toString() ??
+    (task.scope === vscode.TaskScope.Workspace ? 'workspace' : 'global');
+  const definition = sortTaskDefinition(task.definition);
+  return `taskdeck:v2:${JSON.stringify([scope, task.source, task.name, definition])}`;
+}
+
+export function resolvePackageManager(
+  declaredPackageManager: unknown,
+  packageDir: string,
+  workspaceRoot: string
+): PackageManager {
+  const declared = parsePackageManager(declaredPackageManager);
+  if (declared) {
+    return declared;
+  }
+
+  const root = path.resolve(workspaceRoot);
+  let directory = path.resolve(packageDir);
+  while (directory === root || directory.startsWith(`${root}${path.sep}`)) {
+    if (directory !== path.resolve(packageDir)) {
+      const ancestorManifest = path.join(directory, 'package.json');
+      if (fs.existsSync(ancestorManifest)) {
+        try {
+          const packageJson = JSON.parse(fs.readFileSync(ancestorManifest, 'utf8'));
+          const ancestorPackageManager = parsePackageManager(packageJson.packageManager);
+          if (ancestorPackageManager) {
+            return ancestorPackageManager;
+          }
+        } catch (error) {
+          console.error(`Failed to read package manager from ${ancestorManifest}:`, error);
+        }
+      }
+    }
+    if (fs.existsSync(path.join(directory, 'pnpm-lock.yaml'))) {
+      return 'pnpm';
+    }
+    if (fs.existsSync(path.join(directory, 'yarn.lock'))) {
+      return 'yarn';
+    }
+    if (fs.existsSync(path.join(directory, 'bun.lock')) || fs.existsSync(path.join(directory, 'bun.lockb'))) {
+      return 'bun';
+    }
+    if (fs.existsSync(path.join(directory, 'package-lock.json')) || fs.existsSync(path.join(directory, 'npm-shrinkwrap.json'))) {
+      return 'npm';
+    }
+    if (directory === root) {
+      break;
+    }
+    directory = path.dirname(directory);
+  }
+  return 'npm';
+}
+
+function parsePackageManager(value: unknown): PackageManager | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const match = /^(npm|pnpm|yarn|bun)(?:@|$)/.exec(value)?.[1];
+  return match === 'npm' || match === 'pnpm' || match === 'yarn' || match === 'bun'
+    ? match
+    : undefined;
+}
+
+export function createPackageScriptExecution(
+  packageManager: PackageManager,
+  scriptName: string,
+  cwd: string
+): vscode.ShellExecution {
+  return new vscode.ShellExecution(packageManager, ['run', scriptName], { cwd });
 }
 
 // Tree item types
@@ -41,30 +149,46 @@ type TreeItemType = 'group' | 'task';
 class TaskTreeItem extends vscode.TreeItem {
   public taskModel?: TaskItemModel;
   public taskId?: string;
+  public groupKind?: TaskGroupKind;
+  public groupTasks?: TaskItemModel[];
+  public execution?: vscode.TaskExecution;
+  public runningTask?: RunningTask;
+  public historyEntry?: HistoryEntry;
   
   constructor(
     public readonly label: string,
     public readonly collapsibleState: vscode.TreeItemCollapsibleState,
     public readonly itemType: TreeItemType,
-    taskModel?: TaskItemModel
+    taskModel?: TaskItemModel,
+    options: {
+      groupKind?: TaskGroupKind;
+      groupTasks?: TaskItemModel[];
+      runningTask?: RunningTask;
+      historyEntry?: HistoryEntry;
+    } = {}
   ) {
     super(label, collapsibleState);
     this.taskModel = taskModel;
+    this.groupKind = options.groupKind;
+    this.groupTasks = options.groupTasks;
+    this.runningTask = options.runningTask;
+    this.execution = options.runningTask?.execution;
+    this.historyEntry = options.historyEntry;
 
     if (itemType === 'task' && taskModel) {
-      this.contextValue = 'task';
-      this.id = taskModel.id; // Set unique ID for VS Code
+      this.contextValue = options.runningTask ? 'runningTask' : 'task';
+      this.id = options.runningTask ? `running-${options.runningTask.id}` : taskModel.id;
       this.taskId = taskModel.id; // Store for command lookup
       this.tooltip = `${taskModel.label} (${taskModel.source})${taskModel.folderName ? ` - ${taskModel.folderName}` : ''}`;
       this.description = taskModel.source + (taskModel.folderName ? ` - ${taskModel.folderName}` : '');
     } else if (itemType === 'group') {
       this.contextValue = 'group';
-      this.id = `group-${label}`; // Unique ID for groups
+      this.id = `group-${options.groupKind ?? ''}-${label}-${options.groupTasks?.[0]?.workspacePath ?? ''}-${options.groupTasks?.[0]?.folderName ?? ''}`;
     }
   }
 }
 
-class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
+export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   private _onDidChangeTreeData: vscode.EventEmitter<TaskTreeItem | undefined | null | void> = new vscode.EventEmitter<TaskTreeItem | undefined | null | void>();
   readonly onDidChangeTreeData: vscode.Event<TaskTreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
 
@@ -75,8 +199,15 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   private history: HistoryEntry[] = [];
   private filterText: string = '';
   private taskbarPinned: Set<string> = new Set();
+  private runningTasks = new Map<vscode.TaskExecution, RunningTask>();
+  private taskExitCodes = new Map<vscode.TaskExecution, number | undefined>();
+  private nextRunningTaskId = 0;
+  private historySavePromise: Promise<void> = Promise.resolve();
+  private tasksLoaded = false;
+  private loadingTasks: Promise<void> | undefined;
+  private reloadRequested = false;
 
-  constructor(private context: vscode.ExtensionContext) {
+  constructor(private globalState: vscode.Memento) {
     this.loadFavorites();
     this.loadHistory();
     this.loadTaskbarPinned();
@@ -86,7 +217,39 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
     this._onDidChangeTreeData.fire();
   }
 
-  async loadTasks(): Promise<void> {
+  async ensureTasksLoaded(): Promise<void> {
+    if (!this.tasksLoaded) {
+      await this.loadTasks();
+    }
+  }
+
+  loadTasks(): Promise<void> {
+    if (this.loadingTasks) {
+      return this.loadingTasks;
+    }
+
+    this.loadingTasks = this.loadTasksInternal().finally(() => {
+      this.loadingTasks = undefined;
+    });
+    return this.loadingTasks;
+  }
+
+  reloadTasks(): Promise<void> {
+    if (!this.loadingTasks) {
+      return this.loadTasks();
+    }
+
+    this.reloadRequested = true;
+    return this.loadingTasks.then(() => {
+      if (!this.reloadRequested) {
+        return;
+      }
+      this.reloadRequested = false;
+      return this.reloadTasks();
+    });
+  }
+
+  private async loadTasksInternal(): Promise<void> {
     try {
       const allTasks = await vscode.tasks.fetchTasks();
       // Filter out built-in npm tasks since we load them separately with enhanced info
@@ -95,12 +258,13 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
         .map(task => this.createTaskModel(task));
       
       // Load npm scripts separately with enhanced workspace/folder info
-      await this.loadNpmScripts();
-
-      // Load Ant build targets from build.xml files
-      await this.loadAntTargets();
+      await Promise.all([this.loadNpmScripts(), this.loadAntTargets()]);
+      await this.migrateLegacyTaskIds();
+      this.tasksLoaded = true;
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to load tasks: ${error}`);
+    } finally {
+      this.refresh();
     }
   }
 
@@ -113,6 +277,9 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
         const task = this.createNpmTask(npmScript);
         const taskModel = this.createTaskModel(task);
         taskModel.workspacePath = npmScript.workspacePath;
+        taskModel.folderName = npmScript.folderName;
+        taskModel.packageManager = npmScript.packageManager;
+        taskModel.definitionUri = vscode.Uri.file(npmScript.packageJsonPath);
         this.npmScriptTasks.push(taskModel);
       }
     } catch (error) {
@@ -137,15 +304,20 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
           const content = await fs.promises.readFile(file.fsPath, 'utf8');
           const packageJson = JSON.parse(content);
           
-          if (packageJson.scripts) {
+          if (typeof packageJson.scripts === 'object' && packageJson.scripts !== null) {
             const packageDir = path.dirname(file.fsPath);
             const relativePath = path.relative(folder.uri.fsPath, packageDir);
-            const folderName = relativePath || folder.name;
+            const folderName = relativePath || '.';
+            const packageManager = resolvePackageManager(packageJson.packageManager, packageDir, folder.uri.fsPath);
             
             for (const [scriptName, scriptCommand] of Object.entries(packageJson.scripts)) {
+              if (typeof scriptCommand !== 'string') {
+                continue;
+              }
               npmScripts.push({
                 name: scriptName,
-                script: scriptCommand as string,
+                script: scriptCommand,
+                packageManager,
                 packageJsonPath: file.fsPath,
                 folderName: folderName,
                 workspacePath: folder.uri.fsPath
@@ -170,7 +342,8 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
     const definition: vscode.TaskDefinition = {
       type: 'npm',
       script: npmScript.name,
-      path: packageDir
+      path: packageDir,
+      packageManager: npmScript.packageManager
     };
 
     const task = new vscode.Task(
@@ -178,7 +351,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       workspaceFolder || vscode.TaskScope.Workspace,
       npmScript.name,
       'npm script',
-      new vscode.ShellExecution(`npm run ${npmScript.name}`, { cwd: packageDir })
+      createPackageScriptExecution(npmScript.packageManager, npmScript.name, packageDir)
     );
 
     return task;
@@ -193,6 +366,8 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
         const task = this.createAntTask(antTarget);
         const taskModel = this.createTaskModel(task);
         taskModel.workspacePath = antTarget.workspacePath;
+        taskModel.folderName = antTarget.folderName;
+        taskModel.definitionUri = vscode.Uri.file(antTarget.buildXmlPath);
         this.antTargetTasks.push(taskModel);
       }
     } catch (error) {
@@ -265,7 +440,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       workspaceFolder || vscode.TaskScope.Workspace,
       antTarget.name,
       'ant',
-      new vscode.ShellExecution(`ant ${antTarget.name}`, { cwd: buildDir })
+      new vscode.ShellExecution('ant', [antTarget.name], { cwd: buildDir })
     );
 
     return task;
@@ -274,19 +449,84 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
   createTaskModel(task: vscode.Task): TaskItemModel {
     const folderName = task.scope && typeof task.scope !== 'number' ? task.scope.name : undefined;
     const id = this.createId(task);
+    const workspaceFolder = task.scope && typeof task.scope !== 'number' ? task.scope : undefined;
+    const tasksJson = workspaceFolder
+      ? vscode.Uri.joinPath(workspaceFolder.uri, '.vscode', 'tasks.json')
+      : undefined;
     return {
       id,
       label: task.name,
       source: task.source,
       folderName,
       workspacePath: undefined,
+      definitionUri: tasksJson && fs.existsSync(tasksJson.fsPath) ? tasksJson : undefined,
       vscodeTask: task
     };
   }
 
   createId(task: vscode.Task): string {
+    return createStableTaskId(task);
+  }
+
+  private createLegacyId(task: vscode.Task): string {
     const folderName = task.scope && typeof task.scope !== 'number' ? task.scope.name : 'global';
     return `${folderName}:${task.source}:${task.name}`;
+  }
+
+  private async migrateLegacyTaskIds(): Promise<void> {
+    const tasksByLegacyId = new Map<string, TaskItemModel[]>();
+    for (const task of this.getTasks()) {
+      const legacyId = this.createLegacyId(task.vscodeTask);
+      const matchingTasks = tasksByLegacyId.get(legacyId) ?? [];
+      matchingTasks.push(task);
+      tasksByLegacyId.set(legacyId, matchingTasks);
+    }
+
+    let favoritesChanged = false;
+    const migratedFavorites = new Set<string>();
+    for (const favoriteId of this.favorites) {
+      const matches = tasksByLegacyId.get(favoriteId);
+      if (matches) {
+        favoritesChanged = true;
+        matches.forEach(task => migratedFavorites.add(task.id));
+      } else {
+        migratedFavorites.add(favoriteId);
+      }
+    }
+    this.favorites = Array.from(migratedFavorites);
+
+    let pinsChanged = false;
+    const migratedPins = new Set<string>();
+    for (const pinnedId of this.taskbarPinned) {
+      const matches = tasksByLegacyId.get(pinnedId);
+      if (matches) {
+        pinsChanged = true;
+        matches.forEach(task => migratedPins.add(task.id));
+      } else {
+        migratedPins.add(pinnedId);
+      }
+    }
+    this.taskbarPinned = migratedPins;
+
+    let historyChanged = false;
+    this.history = this.history.map(entry => {
+      const matches = tasksByLegacyId.get(entry.taskId);
+      if (!matches) {
+        return entry;
+      }
+      historyChanged = true;
+      return { ...entry, taskId: matches[matches.length - 1].id };
+    });
+
+    if (favoritesChanged) {
+      await this.saveFavorites();
+    }
+    if (pinsChanged) {
+      await this.saveTaskbarPinned();
+    }
+    if (historyChanged) {
+      await this.saveHistory();
+    }
   }
 
   getTreeItem(element: TaskTreeItem): vscode.TreeItem {
@@ -297,7 +537,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
     if (!element) {
       // Root level - show top-level groups
       // Only load tasks if not already loaded
-      if (this.tasks.length === 0) {
+      if (!this.tasksLoaded) {
         await this.loadTasks();
       }
 
@@ -306,6 +546,14 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       const filteredAntTargets = this.getFilteredAntTargets();
       const allFilteredTasks = [...filteredTasks, ...filteredNpmScripts, ...filteredAntTargets];
       const result: TaskTreeItem[] = [];
+      const runningTasks = this.getVisibleRunningTasks();
+      if (runningTasks.length > 0) {
+        const runningGroup = new TaskTreeItem('Running', vscode.TreeItemCollapsibleState.Expanded, 'group', undefined, {
+          groupKind: 'running'
+        });
+        runningGroup.iconPath = new vscode.ThemeIcon('debug-start');
+        result.push(runningGroup);
+      }
 
       // Create a map of task IDs for quick lookup
       const taskMap = new Map<string, TaskItemModel>();
@@ -334,16 +582,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       }
 
       // Recent group
-      const recentTaskIds = this.history
-        .slice()
-        .reverse()
-        .map(h => h.taskId)
-        .filter((id, index, self) => self.indexOf(id) === index) // Unique
-        .slice(0, 10);
-
-      const recentTasks = recentTaskIds
-        .map(id => taskMap.get(id))
-        .filter(t => t && !this.favorites.includes(t.id) && !this.taskbarPinned.has(t.id)) as TaskItemModel[];
+      const recentTasks = this.getRecentTasks(allFilteredTasks);
 
       if (recentTasks.length > 0) {
         const recentGroup = new TaskTreeItem('Recent', vscode.TreeItemCollapsibleState.Expanded, 'group');
@@ -352,14 +591,17 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       }
 
       // npm scripts group (only show if there are npm scripts)
-      const recentIds = new Set(recentTaskIds);
+      const recentIds = new Set(recentTasks.map(task => task.id));
       const pinnedIds = new Set(pinnedTasks.map(t => t.id));
       
       if (filteredNpmScripts.length > 0) {
         const npmScriptsToShow = filteredNpmScripts.filter(t => !this.favorites.includes(t.id) && !pinnedIds.has(t.id) && !recentIds.has(t.id));
         
         if (npmScriptsToShow.length > 0) {
-          const npmScriptsGroup = new TaskTreeItem('npm scripts', vscode.TreeItemCollapsibleState.Expanded, 'group');
+          const npmScriptsGroup = new TaskTreeItem('npm scripts', vscode.TreeItemCollapsibleState.Collapsed, 'group', undefined, {
+            groupKind: 'npmScripts',
+            groupTasks: npmScriptsToShow
+          });
           npmScriptsGroup.iconPath = new vscode.ThemeIcon('package');
           result.push(npmScriptsGroup);
         }
@@ -370,7 +612,10 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
         const antTargetsToShow = filteredAntTargets.filter(t => !this.favorites.includes(t.id) && !pinnedIds.has(t.id) && !recentIds.has(t.id));
 
         if (antTargetsToShow.length > 0) {
-          const antTargetsGroup = new TaskTreeItem('Ant targets', vscode.TreeItemCollapsibleState.Expanded, 'group');
+          const antTargetsGroup = new TaskTreeItem('Ant targets', vscode.TreeItemCollapsibleState.Collapsed, 'group', undefined, {
+            groupKind: 'antTargets',
+            groupTasks: antTargetsToShow
+          });
           antTargetsGroup.iconPath = new vscode.ThemeIcon('symbol-event');
           result.push(antTargetsGroup);
         }
@@ -398,7 +643,12 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
           const sourceGroup = new TaskTreeItem(
             this.getSourceDisplayName(source),
             vscode.TreeItemCollapsibleState.Collapsed,
-            'group'
+            'group',
+            undefined,
+            {
+              groupKind: 'source',
+              groupTasks: tasksBySource.get(source)
+            }
           );
           sourceGroup.iconPath = this.getSourceIcon(source);
           result.push(sourceGroup);
@@ -415,10 +665,41 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
       const taskMap = new Map<string, TaskItemModel>();
       allFilteredTasks.forEach(task => taskMap.set(task.id, task));
 
-      if (element.label === 'Favorites') {
-        const favoriteTasks = this.favorites
-          .map(id => taskMap.get(id))
-          .filter((t): t is TaskItemModel => t !== undefined);
+      if (element.groupKind === 'running') {
+        return this.getVisibleRunningTasks().map(runningTask => {
+          const item = new TaskTreeItem(
+            runningTask.task.label,
+            vscode.TreeItemCollapsibleState.None,
+            'task',
+            runningTask.task,
+            { runningTask }
+          );
+          item.description = `Started ${new Date(runningTask.startedAt).toLocaleTimeString()}`;
+          item.tooltip = `${runningTask.task.label}\nRunning since ${new Date(runningTask.startedAt).toLocaleString()}`;
+          item.iconPath = new vscode.ThemeIcon('loading~spin');
+          return item;
+        });
+      } else if (element.groupKind === 'npmScripts') {
+        return this.createNpmWorkspaceGroups(element.groupTasks ?? []);
+      } else if (element.groupKind === 'npmWorkspace') {
+        return this.createNpmPackageGroups(element.groupTasks ?? []);
+      } else if (element.groupKind === 'npmPackage') {
+        return (element.groupTasks ?? []).map(task => this.createNpmTaskItem(task));
+      } else if (element.groupKind === 'source') {
+        return (element.groupTasks ?? []).map(task => {
+          const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task);
+          item.iconPath = new vscode.ThemeIcon('play-circle');
+          return item;
+        });
+      } else if (element.groupKind === 'antTargets') {
+        return (element.groupTasks ?? []).map(task => {
+          const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task);
+          item.iconPath = new vscode.ThemeIcon('symbol-event');
+          item.tooltip = this.getTaskTooltip(task);
+          return item;
+        });
+      } else if (element.label === 'Favorites') {
+        const favoriteTasks = this.getFavoriteTasks(allFilteredTasks);
         return favoriteTasks.map(task => {
           const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task);
           item.contextValue = 'favoriteTask';
@@ -433,71 +714,27 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
           return item;
         });
       } else if (element.label === 'Recent') {
-        const recentTaskIds = this.history
-          .slice()
-          .reverse()
-          .map(h => h.taskId)
-          .filter((id, index, self) => self.indexOf(id) === index)
-          .slice(0, 10);
+        const recentEntries = this.getRecentTaskEntries(allFilteredTasks);
 
-        const recentTasks = recentTaskIds
-          .map(id => taskMap.get(id))
-          .filter(t => t && !this.favorites.includes(t.id) && !this.taskbarPinned.has(t.id)) as TaskItemModel[];
-
-        return recentTasks.map(task => {
-          const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task);
+        return recentEntries.map(({ task, historyEntry }) => {
+          const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task, { historyEntry });
           item.iconPath = new vscode.ThemeIcon('history');
+          item.description = `${task.source}${task.folderName ? ` - ${task.folderName}` : ''} - ${this.formatHistoryEntry(historyEntry)}`;
+          item.tooltip = `${this.getTaskTooltip(task)}\n${this.formatHistoryEntry(historyEntry)}`;
           return item;
         });
       } else if (element.label === 'npm scripts') {
         // Show npm script tasks
-        const recentTaskIds = this.history
-          .slice()
-          .reverse()
-          .map(h => h.taskId)
-          .filter((id, index, self) => self.indexOf(id) === index)
-          .slice(0, 10);
-        const recentIds = new Set(recentTaskIds);
+        const recentIds = new Set(this.getRecentTasks(allFilteredTasks).map(task => task.id));
 
         const npmScriptTasks = filteredNpmScripts.filter(
           t => !this.favorites.includes(t.id) && !this.taskbarPinned.has(t.id) && !recentIds.has(t.id)
         );
 
-        return npmScriptTasks.map(task => {
-          const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task);
-          item.iconPath = new vscode.ThemeIcon('package');
-          
-          // Enhanced tooltip with workspace and folder info
-          const tooltipParts = [
-            `${task.label}`,
-            `Source: ${task.source}`,
-          ];
-          if (task.folderName) {
-            tooltipParts.push(`Folder: ${task.folderName}`);
-          }
-          if (task.workspacePath) {
-            tooltipParts.push(`Workspace: ${task.workspacePath}`);
-          }
-          item.tooltip = tooltipParts.join('\n');
-          
-          // Enhanced description
-          const descriptionParts = [task.source];
-          if (task.folderName) {
-            descriptionParts.push(task.folderName);
-          }
-          item.description = descriptionParts.join(' - ');
-          
-          return item;
-        });
+        return this.createNpmWorkspaceGroups(npmScriptTasks);
       } else if (element.label === 'Ant targets') {
         // Show Ant target tasks
-        const recentTaskIds = this.history
-          .slice()
-          .reverse()
-          .map(h => h.taskId)
-          .filter((id, index, self) => self.indexOf(id) === index)
-          .slice(0, 10);
-        const recentIds = new Set(recentTaskIds);
+        const recentIds = new Set(this.getRecentTasks(allFilteredTasks).map(task => task.id));
 
         const antTasks = filteredAntTargets.filter(
           t => !this.favorites.includes(t.id) && !this.taskbarPinned.has(t.id) && !recentIds.has(t.id)
@@ -530,18 +767,13 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
           return item;
         });
       } else {
-        // This is a source group - show tasks for this source
-        const sourceName = this.getSourceFromDisplayName(element.label);
-        const recentTaskIds = this.history
-          .slice()
-          .reverse()
-          .map(h => h.taskId)
-          .filter((id, index, self) => self.indexOf(id) === index)
-          .slice(0, 10);
-        const recentIds = new Set(recentTaskIds);
+        const recentIds = new Set(this.getRecentTasks(allFilteredTasks).map(task => task.id));
 
-        const sourceTasks = filteredTasks.filter(
-          t => t.source === sourceName && !this.favorites.includes(t.id) && !this.taskbarPinned.has(t.id) && !recentIds.has(t.id)
+        const sourceTasks = filteredTasks.filter(t =>
+          t.source === this.getSourceFromDisplayName(element.label) &&
+          !this.favorites.includes(t.id) &&
+          !this.taskbarPinned.has(t.id) &&
+          !recentIds.has(t.id)
         );
 
         return sourceTasks.map(task => {
@@ -550,9 +782,75 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
           return item;
         });
       }
+
     }
 
     return [];
+  }
+
+  private createNpmWorkspaceGroups(tasks: TaskItemModel[]): TaskTreeItem[] {
+    const groups = new Map<string, TaskItemModel[]>();
+    for (const task of tasks) {
+      const workspacePath = task.workspacePath ?? '';
+      const group = groups.get(workspacePath) ?? [];
+      group.push(task);
+      groups.set(workspacePath, group);
+    }
+
+    return Array.from(groups, ([workspacePath, workspaceTasks]) => {
+      const folder = vscode.workspace.workspaceFolders?.find(candidate => candidate.uri.fsPath === workspacePath);
+      const label = folder?.name ?? (workspacePath ? path.basename(workspacePath) : 'Workspace');
+      const group = new TaskTreeItem(label, vscode.TreeItemCollapsibleState.Collapsed, 'group', undefined, {
+        groupKind: 'npmWorkspace',
+        groupTasks: workspaceTasks
+      });
+      group.iconPath = new vscode.ThemeIcon('root-folder');
+      return group;
+    }).sort((left, right) => left.label.localeCompare(right.label));
+  }
+
+  private createNpmPackageGroups(tasks: TaskItemModel[]): TaskTreeItem[] {
+    const groups = new Map<string, TaskItemModel[]>();
+    for (const task of tasks) {
+      const packagePath = task.folderName ?? '.';
+      const group = groups.get(packagePath) ?? [];
+      group.push(task);
+      groups.set(packagePath, group);
+    }
+
+    return Array.from(groups, ([packagePath, packageTasks]) => {
+      const label = packagePath === '.' ? 'Root package' : packagePath;
+      const group = new TaskTreeItem(label, vscode.TreeItemCollapsibleState.Collapsed, 'group', undefined, {
+        groupKind: 'npmPackage',
+        groupTasks: packageTasks
+      });
+      group.iconPath = new vscode.ThemeIcon('folder');
+      return group;
+    }).sort((left, right) => left.label.localeCompare(right.label));
+  }
+
+  private createNpmTaskItem(task: TaskItemModel): TaskTreeItem {
+    const item = new TaskTreeItem(task.label, vscode.TreeItemCollapsibleState.None, 'task', task);
+    item.iconPath = new vscode.ThemeIcon('package');
+    item.description = `${task.packageManager ?? 'npm'}${task.folderName ? ` - ${task.folderName}` : ''}`;
+    item.tooltip = `${this.getTaskTooltip(task)}\nPackage manager: ${task.packageManager ?? 'npm'}`;
+    return item;
+  }
+
+  private getTaskTooltip(task: TaskItemModel): string {
+    const parts = [task.label, `Source: ${task.source}`];
+    if (task.folderName) {
+      parts.push(`Folder: ${task.folderName}`);
+    }
+    if (task.workspacePath) {
+      parts.push(`Workspace: ${task.workspacePath}`);
+    }
+    return parts.join('\n');
+  }
+
+  private getVisibleRunningTasks(): RunningTask[] {
+    const visibleTasks = new Set(this.filterTasks(this.getRunningTasks().map(task => task.task)).map(task => task.id));
+    return this.getRunningTasks().filter(task => visibleTasks.has(task.task.id));
   }
 
   private getSourceDisplayName(source: string): string {
@@ -609,65 +907,99 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
     return new Set(excluded.map(s => s.toLowerCase()));
   }
 
-  private getFilteredTasks(): TaskItemModel[] {
+  private filterTasks(tasks: TaskItemModel[]): TaskItemModel[] {
     const excludedSources = this.getExcludedSources();
-    let result = this.tasks.filter(task => !excludedSources.has(task.source.toLowerCase()));
-
-    if (!this.filterText) {
-      return result;
-    }
-
     const lowerFilter = this.filterText.toLowerCase();
-    return result.filter(task => {
-      return (
-        task.label.toLowerCase().includes(lowerFilter) ||
-        task.source.toLowerCase().includes(lowerFilter) ||
-        (task.folderName && task.folderName.toLowerCase().includes(lowerFilter))
-      );
+    return tasks.filter(task => {
+      if (excludedSources.has(task.source.toLowerCase())) {
+        return false;
+      }
+      if (!lowerFilter) {
+        return true;
+      }
+      return [task.label, task.source, task.folderName, task.workspacePath]
+        .some(value => value?.toLowerCase().includes(lowerFilter));
     });
+  }
+
+  private getFilteredTasks(): TaskItemModel[] {
+    return this.filterTasks(this.tasks);
   }
 
   private getFilteredNpmScripts(): TaskItemModel[] {
-    const excludedSources = this.getExcludedSources();
-    let result = this.npmScriptTasks.filter(task => !excludedSources.has(task.source.toLowerCase()));
-
-    if (!this.filterText) {
-      return result;
-    }
-
-    const lowerFilter = this.filterText.toLowerCase();
-    return result.filter(task => {
-      return (
-        task.label.toLowerCase().includes(lowerFilter) ||
-        task.source.toLowerCase().includes(lowerFilter) ||
-        (task.folderName && task.folderName.toLowerCase().includes(lowerFilter)) ||
-        (task.workspacePath && task.workspacePath.toLowerCase().includes(lowerFilter))
-      );
-    });
+    return this.filterTasks(this.npmScriptTasks);
   }
 
   private getFilteredAntTargets(): TaskItemModel[] {
-    const excludedSources = this.getExcludedSources();
-    let result = this.antTargetTasks.filter(task => !excludedSources.has(task.source.toLowerCase()));
+    return this.filterTasks(this.antTargetTasks);
+  }
 
-    if (!this.filterText) {
-      return result;
+  getVisibleTasks(): TaskItemModel[] {
+    return [...this.getFilteredTasks(), ...this.getFilteredNpmScripts(), ...this.getFilteredAntTargets()];
+  }
+
+  getFavoriteTasks(tasks: TaskItemModel[]): TaskItemModel[] {
+    const tasksById = new Map(tasks.map(task => [task.id, task]));
+    return this.favorites
+      .map(id => tasksById.get(id))
+      .filter((task): task is TaskItemModel => task !== undefined);
+  }
+
+  getRecentTasks(tasks: TaskItemModel[]): TaskItemModel[] {
+    return this.getRecentTaskEntries(tasks).map(entry => entry.task);
+  }
+
+  getRecentTaskEntries(tasks: TaskItemModel[]): Array<{ task: TaskItemModel; historyEntry: HistoryEntry }> {
+    const tasksById = new Map(tasks.map(task => [task.id, task]));
+    const runningTaskIds = new Set(this.getRunningTasks().map(task => task.task.id));
+    const seen = new Set<string>();
+    const recent: Array<{ task: TaskItemModel; historyEntry: HistoryEntry }> = [];
+    for (const historyEntry of this.history.slice().reverse()) {
+      if (seen.has(historyEntry.taskId)) {
+        continue;
+      }
+      seen.add(historyEntry.taskId);
+      if (runningTaskIds.has(historyEntry.taskId)) {
+        continue;
+      }
+      const task = tasksById.get(historyEntry.taskId);
+      if (task && !this.favorites.includes(task.id) && !this.taskbarPinned.has(task.id)) {
+        recent.push({ task, historyEntry });
+      }
+      if (recent.length === 10) {
+        break;
+      }
     }
+    return recent;
+  }
 
-    const lowerFilter = this.filterText.toLowerCase();
-    return result.filter(task => {
-      return (
-        task.label.toLowerCase().includes(lowerFilter) ||
-        task.source.toLowerCase().includes(lowerFilter) ||
-        (task.folderName && task.folderName.toLowerCase().includes(lowerFilter)) ||
-        (task.workspacePath && task.workspacePath.toLowerCase().includes(lowerFilter))
-      );
-    });
+  private formatHistoryEntry(entry: HistoryEntry): string {
+    const status = entry.status ??
+      (entry.exitCode === 0 ? 'succeeded' : entry.exitCode !== undefined ? 'failed' : 'completed');
+    const statusLabel = status === 'succeeded' ? 'Succeeded'
+      : status === 'failed' ? `Failed (exit ${entry.exitCode})`
+      : status === 'terminated' ? 'Stopped'
+      : status === 'running' ? 'Running'
+      : status === 'interrupted' ? 'Interrupted'
+      : 'Completed';
+    const duration = entry.durationMs === undefined ? '' : ` · ${this.formatDuration(entry.durationMs)}`;
+    return `${statusLabel} · ${new Date(entry.runAt).toLocaleString()}${duration}`;
+  }
+
+  private formatDuration(durationMs: number): string {
+    const totalSeconds = Math.floor(durationMs / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
   }
 
   async setFilter(filterText: string): Promise<void> {
     this.filterText = filterText;
     this.refresh();
+  }
+
+  getFilterText(): string {
+    return this.filterText;
   }
 
   async toggleFavorite(taskModel: TaskItemModel): Promise<void> {
@@ -721,39 +1053,37 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
     this.refresh();
   }
 
-  addToHistory(taskId: string, label: string, exitCode?: number): void {
-    const entry: HistoryEntry = {
-      taskId,
-      label,
-      runAt: Date.now(),
-      exitCode
-    };
-
-    this.history.push(entry);
-
-    // Keep only last 20 entries
-    if (this.history.length > 20) {
-      this.history = this.history.slice(-20);
-    }
-
-    this.saveHistory();
-    this.refresh();
-  }
-
   private loadFavorites(): void {
-    this.favorites = this.context.globalState.get<string[]>('taskdeck.favorites', []);
+    this.favorites = this.globalState.get<string[]>('taskdeck.favorites', []);
   }
 
   private async saveFavorites(): Promise<void> {
-    await this.context.globalState.update('taskdeck.favorites', this.favorites);
+    await this.globalState.update('taskdeck.favorites', this.favorites);
   }
 
   private loadHistory(): void {
-    this.history = this.context.globalState.get<HistoryEntry[]>('taskdeck.history', []);
+    const savedHistory = this.globalState.get<HistoryEntry[]>('taskdeck.history', []);
+    let interruptedTasks = false;
+    this.history = savedHistory.map(entry => {
+      if (entry.status !== 'running') {
+        return entry;
+      }
+      interruptedTasks = true;
+      return { ...entry, status: 'interrupted' };
+    });
+    if (interruptedTasks) {
+      void this.saveHistory().catch(error => console.error('Failed to save task history:', error));
+    }
   }
 
   private async saveHistory(): Promise<void> {
-    await this.context.globalState.update('taskdeck.history', this.history);
+    const snapshot = this.history.map(entry => ({ ...entry }));
+    this.historySavePromise = this.historySavePromise
+      .catch(error => {
+        console.error('Failed to save task history:', error);
+      })
+      .then(() => this.globalState.update('taskdeck.history', snapshot));
+    await this.historySavePromise;
   }
 
   getTasks(): TaskItemModel[] {
@@ -768,6 +1098,78 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
     return this.history;
   }
 
+  async startTask(execution: vscode.TaskExecution, startedAt = Date.now()): Promise<RunningTask> {
+    const task = this.getTaskById(this.createId(execution.task)) ?? this.createTaskModel(execution.task);
+    const historyEntry: HistoryEntry = {
+      taskId: task.id,
+      label: task.label,
+      runAt: startedAt,
+      status: 'running'
+    };
+    const runningTask: RunningTask = {
+      id: ++this.nextRunningTaskId,
+      execution,
+      task,
+      startedAt,
+      historyEntry
+    };
+    this.runningTasks.set(execution, runningTask);
+    this.history.push(historyEntry);
+    while (this.history.length > 20) {
+      const completedIndex = this.history.findIndex(entry => entry.status !== 'running');
+      if (completedIndex === -1) {
+        break;
+      }
+      this.history.splice(completedIndex, 1);
+    }
+    try {
+      await this.saveHistory();
+    } finally {
+      this.refresh();
+    }
+    return runningTask;
+  }
+
+  recordTaskExitCode(execution: vscode.TaskExecution, exitCode: number | undefined): void {
+    if (this.runningTasks.has(execution)) {
+      this.taskExitCodes.set(execution, exitCode);
+    }
+  }
+
+  async finishTask(execution: vscode.TaskExecution, finishedAt = Date.now()): Promise<HistoryEntry | undefined> {
+    const runningTask = this.runningTasks.get(execution);
+    if (!runningTask) {
+      return undefined;
+    }
+
+    this.runningTasks.delete(execution);
+    const hasExitCode = this.taskExitCodes.has(execution);
+    const exitCode = this.taskExitCodes.get(execution);
+    this.taskExitCodes.delete(execution);
+    if (hasExitCode && exitCode !== undefined) {
+      runningTask.historyEntry.exitCode = exitCode;
+    }
+    runningTask.historyEntry.status = !hasExitCode
+      ? 'completed'
+      : exitCode === undefined ? 'terminated'
+      : exitCode === 0 ? 'succeeded' : 'failed';
+    runningTask.historyEntry.durationMs = Math.max(0, finishedAt - runningTask.startedAt);
+    try {
+      await this.saveHistory();
+    } finally {
+      this.refresh();
+    }
+    return runningTask.historyEntry;
+  }
+
+  getRunningTasks(): RunningTask[] {
+    return Array.from(this.runningTasks.values());
+  }
+
+  getRunningTaskById(id: number): RunningTask | undefined {
+    return this.getRunningTasks().find(task => task.id === id);
+  }
+
   async toggleTaskbarPin(taskModel: TaskItemModel): Promise<void> {
     console.log('[TaskDeck] Toggling taskbar pin for task:', taskModel.id);
     if (this.taskbarPinned.has(taskModel.id)) {
@@ -779,6 +1181,7 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
     }
     await this.saveTaskbarPinned();
     console.log('[TaskDeck] Taskbar pins saved');
+    this.refresh();
   }
 
   isTaskbarPinned(taskId: string): boolean {
@@ -787,16 +1190,17 @@ class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 
   getTaskbarPinnedTasks(): TaskItemModel[] {
     const allTasks = [...this.tasks, ...this.npmScriptTasks, ...this.antTargetTasks];
-    return allTasks.filter(t => this.taskbarPinned.has(t.id));
+    const excludedSources = this.getExcludedSources();
+    return allTasks.filter(t => this.taskbarPinned.has(t.id) && !excludedSources.has(t.source.toLowerCase()));
   }
 
   private loadTaskbarPinned(): void {
-    const saved = this.context.globalState.get<string[]>('taskdeck.taskbarPinned', []);
+    const saved = this.globalState.get<string[]>('taskdeck.taskbarPinned', []);
     this.taskbarPinned = new Set(saved);
   }
 
   private async saveTaskbarPinned(): Promise<void> {
-    await this.context.globalState.update('taskdeck.taskbarPinned', Array.from(this.taskbarPinned));
+    await this.globalState.update('taskdeck.taskbarPinned', Array.from(this.taskbarPinned));
   }
 }
 
@@ -831,7 +1235,7 @@ export function activate(context: vscode.ExtensionContext) {
   console.log('TaskDeck extension is now active!');
 
   // Create the tree data provider
-  const treeProvider = new TaskTreeProvider(context);
+  const treeProvider = new TaskTreeProvider(context.globalState);
 
   // Create the tree view with drag-and-drop for favorite reordering
   const dragAndDropController = new FavoriteDragAndDropController(treeProvider);
@@ -842,10 +1246,12 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Status bar item
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  let currentRunningTask: vscode.TaskExecution | undefined;
 
   // Taskbar status bar items for pinned tasks
   const taskbarStatusBarItems: Map<string, vscode.StatusBarItem> = new Map();
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let completionTimeout: ReturnType<typeof setTimeout> | undefined;
+  let lastCompletedEntry: HistoryEntry | undefined;
 
   // Function to update taskbar status bar items
   function updateTaskbarItems() {
@@ -866,16 +1272,132 @@ export function activate(context: vscode.ExtensionContext) {
       };
       item.show();
       taskbarStatusBarItems.set(task.id, item);
-      context.subscriptions.push(item);
     });
   }
+
+  function updateTaskStatus(completedEntry?: HistoryEntry) {
+    const runningTasks = treeProvider.getRunningTasks();
+    if (completionTimeout) {
+      clearTimeout(completionTimeout);
+      completionTimeout = undefined;
+    }
+
+    if (runningTasks.length > 0) {
+      lastCompletedEntry = undefined;
+      const current = runningTasks[runningTasks.length - 1];
+      statusBarItem.text = runningTasks.length === 1
+        ? `$(terminal) ${current.task.label}`
+        : `$(terminal) ${runningTasks.length} tasks running`;
+      statusBarItem.tooltip = `Running:\n${runningTasks.map(task => task.task.label).join('\n')}`;
+      statusBarItem.command = {
+        command: 'taskdeck.focusTaskTerminal',
+        title: 'Focus Task Terminal',
+        arguments: [current.id]
+      };
+      statusBarItem.show();
+      return;
+    }
+
+    if (completedEntry) {
+      lastCompletedEntry = completedEntry;
+      statusBarItem.text = completedEntry.status === 'succeeded'
+        ? `$(check) ${completedEntry.label}`
+        : completedEntry.status === 'failed'
+          ? `$(error) ${completedEntry.label}`
+          : completedEntry.status === 'terminated'
+            ? `$(debug-stop) ${completedEntry.label}`
+            : `$(terminal) ${completedEntry.label}`;
+      statusBarItem.tooltip = `${completedEntry.status ?? 'completed'}${completedEntry.exitCode === undefined ? '' : ` (exit code ${completedEntry.exitCode})`}`;
+      statusBarItem.command = 'workbench.action.terminal.focus';
+      statusBarItem.show();
+      completionTimeout = setTimeout(() => {
+        if (lastCompletedEntry === completedEntry && treeProvider.getRunningTasks().length === 0) {
+          statusBarItem.hide();
+          lastCompletedEntry = undefined;
+        }
+      }, 5000);
+      return;
+    }
+
+    statusBarItem.hide();
+  }
+
+  async function focusTaskTerminal(runningTask: RunningTask): Promise<void> {
+    const terminalNames = new Set([runningTask.task.label, `Task - ${runningTask.task.label}`]);
+    const matchingTerminals = vscode.window.terminals.filter(terminal => terminalNames.has(terminal.name));
+    if (matchingTerminals.length === 1) {
+      matchingTerminals[0].show();
+      return;
+    }
+    if (matchingTerminals.length > 1) {
+      const selected = await vscode.window.showQuickPick(
+        matchingTerminals.map((terminal, index) => ({
+          label: terminal.name,
+          description: `Terminal ${index + 1}`,
+          terminal
+        })),
+        { placeHolder: `Select a terminal for ${runningTask.task.label}` }
+      );
+      selected?.terminal.show();
+      return;
+    }
+    await vscode.commands.executeCommand('workbench.action.terminal.focus');
+  }
+
+  async function updateFilterContext(): Promise<void> {
+    const filterText = treeProvider.getFilterText();
+    treeView.description = filterText ? `Filter: ${filterText}` : undefined;
+    await vscode.commands.executeCommand('setContext', 'taskdeck.hasFilter', Boolean(filterText));
+  }
+
+  void updateFilterContext().catch(error => console.error('Failed to update filter context:', error));
+
+  function scheduleTaskRefresh(uri?: vscode.Uri) {
+    if (uri?.fsPath.split(path.sep).some(segment => segment.toLowerCase() === 'node_modules')) {
+      return;
+    }
+    if (refreshTimer) {
+      clearTimeout(refreshTimer);
+    }
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined;
+      void treeProvider.reloadTasks().then(updateTaskbarItems);
+    }, 200);
+  }
+
+  for (const pattern of ['**/package.json', '**/build.xml', '**/.vscode/tasks.json']) {
+    const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+    context.subscriptions.push(
+      watcher,
+      watcher.onDidCreate(uri => scheduleTaskRefresh(uri)),
+      watcher.onDidChange(uri => scheduleTaskRefresh(uri)),
+      watcher.onDidDelete(uri => scheduleTaskRefresh(uri))
+    );
+  }
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => scheduleTaskRefresh()),
+    vscode.workspace.onDidChangeConfiguration(event => {
+      if (event.affectsConfiguration('taskdeck.excludeSources')) {
+        treeProvider.refresh();
+        updateTaskbarItems();
+      }
+    }),
+    {
+      dispose: () => {
+        if (refreshTimer) {
+          clearTimeout(refreshTimer);
+        }
+      }
+    }
+  );
 
   // Register commands
   context.subscriptions.push(
     vscode.commands.registerCommand('taskdeck.refreshTasks', async () => {
-      await treeProvider.loadTasks();
+      await treeProvider.reloadTasks();
       treeProvider.refresh();
-      vscode.window.showInformationMessage('Tasks refreshed');
+      updateTaskbarItems();
     })
   );
 
@@ -917,7 +1439,6 @@ export function activate(context: vscode.ExtensionContext) {
 
         console.log('[TaskDeck] Executing task:', taskModel.label);
         await vscode.tasks.executeTask(taskModel.vscodeTask);
-        vscode.window.showInformationMessage(`Running task: ${taskModel.label}`);
       } catch (error) {
         console.error('[TaskDeck] Failed to run task:', error);
         vscode.window.showErrorMessage(`Failed to run task: ${error}`);
@@ -940,10 +1461,6 @@ export function activate(context: vscode.ExtensionContext) {
       if (taskModel) {
         console.log('[TaskDeck] Task model found:', taskModel.id);
         await treeProvider.toggleFavorite(taskModel);
-        const isFav = treeProvider.isFavorite(taskModel.id);
-        vscode.window.showInformationMessage(
-          `Task ${isFav ? 'added to' : 'removed from'} favorites: ${taskModel.label}`
-        );
       } else {
         console.log('[TaskDeck] No task model found');
         vscode.window.showErrorMessage('No task selected');
@@ -954,17 +1471,87 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('taskdeck.setFilter', async () => {
       const filterText = await vscode.window.showInputBox({
-        prompt: 'Enter filter text (searches task name, source, and folder)',
-        placeHolder: 'Filter tasks...'
+        prompt: 'Enter filter text (searches task name, source, package, and workspace)',
+        placeHolder: 'Filter tasks...',
+        value: treeProvider.getFilterText()
       });
 
       if (filterText !== undefined) {
         await treeProvider.setFilter(filterText);
-        if (filterText) {
-          vscode.window.showInformationMessage(`Filter applied: ${filterText}`);
-        } else {
-          vscode.window.showInformationMessage('Filter cleared');
-        }
+        await updateFilterContext();
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('taskdeck.clearFilter', async () => {
+      await treeProvider.setFilter('');
+      await updateFilterContext();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('taskdeck.openTaskDefinition', async (item?: TaskTreeItem) => {
+      const definitionUri = item?.taskModel?.definitionUri;
+      if (!definitionUri) {
+        vscode.window.showErrorMessage('No task definition file is available for this task.');
+        return;
+      }
+
+      try {
+        await vscode.window.showTextDocument(definitionUri);
+      } catch (error) {
+        vscode.window.showErrorMessage(`Failed to open task definition: ${error}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('taskdeck.stopTask', (item?: TaskTreeItem) => {
+      if (!item?.execution) {
+        vscode.window.showErrorMessage('No running task selected.');
+        return;
+      }
+      item.execution.terminate();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('taskdeck.restartTask', async (item?: TaskTreeItem) => {
+      const runningTask = item?.runningTask;
+      if (!runningTask || !treeProvider.getRunningTaskById(runningTask.id)) {
+        vscode.window.showErrorMessage('No running task selected.');
+        return;
+      }
+
+      const taskEnded = new Promise<void>(resolve => {
+        const subscription = vscode.tasks.onDidEndTask(event => {
+          if (event.execution === runningTask.execution) {
+            subscription.dispose();
+            resolve();
+          }
+        });
+      });
+
+      runningTask.execution.terminate();
+      await taskEnded;
+      try {
+        await vscode.tasks.executeTask(runningTask.task.vscodeTask);
+      } catch (error) {
+        vscode.window.showErrorMessage(`Failed to restart task: ${error}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('taskdeck.focusTaskTerminal', async (itemOrId?: TaskTreeItem | number) => {
+      const runningTask = typeof itemOrId === 'number'
+        ? treeProvider.getRunningTaskById(itemOrId)
+        : itemOrId?.runningTask;
+      if (runningTask) {
+        await focusTaskTerminal(runningTask);
+      } else {
+        await vscode.commands.executeCommand('workbench.action.terminal.focus');
       }
     })
   );
@@ -985,10 +1572,6 @@ export function activate(context: vscode.ExtensionContext) {
         console.log('[TaskDeck] Task model found:', taskModel.id);
         await treeProvider.toggleTaskbarPin(taskModel);
         updateTaskbarItems();
-        const isPinned = treeProvider.isTaskbarPinned(taskModel.id);
-        vscode.window.showInformationMessage(
-          `Task ${isPinned ? 'pinned to' : 'unpinned from'} taskbar: ${taskModel.label}`
-        );
       } else {
         console.log('[TaskDeck] No task model found');
         vscode.window.showErrorMessage('No task selected');
@@ -1005,7 +1588,6 @@ export function activate(context: vscode.ExtensionContext) {
       if (taskModel) {
         console.log('[TaskDeck] Executing task from taskbar:', taskModel.label);
         await vscode.tasks.executeTask(taskModel.vscodeTask);
-        vscode.window.showInformationMessage(`Running task: ${taskModel.label}`);
       } else {
         console.log('[TaskDeck] Task not found');
         vscode.window.showErrorMessage('Task not found');
@@ -1015,19 +1597,22 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('taskdeck.runTaskQuickPick', async () => {
-      const tasks = treeProvider.getTasks();
-      const history = treeProvider.getHistory();
+      await treeProvider.ensureTasksLoaded();
+      const tasks = treeProvider.getVisibleTasks();
 
       if (tasks.length === 0) {
-        vscode.window.showInformationMessage('No tasks found');
+        const message = treeProvider.getTasks().length > 0
+          ? 'No tasks match the current filter'
+          : 'No tasks found';
+        vscode.window.showInformationMessage(message);
         return;
       }
 
       // Create quick pick items
-      const items: vscode.QuickPickItem[] = [];
+      const items: TaskQuickPickItem[] = [];
 
       // Add favorites
-      const favoriteTasks = tasks.filter(t => treeProvider.isFavorite(t.id));
+      const favoriteTasks = treeProvider.getFavoriteTasks(tasks);
       if (favoriteTasks.length > 0) {
         items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
         items.push({ label: 'Favorites', kind: vscode.QuickPickItemKind.Separator });
@@ -1039,7 +1624,8 @@ export function activate(context: vscode.ExtensionContext) {
           items.push({
             label: `$(star-full) ${task.label}`,
             description: descriptionParts.join(' - '),
-            detail: task.id
+            detail: task.id,
+            taskId: task.id
           });
         });
       }
@@ -1057,22 +1643,14 @@ export function activate(context: vscode.ExtensionContext) {
           items.push({
             label: `$(pinned) ${task.label}`,
             description: descriptionParts.join(' - '),
-            detail: task.id
+            detail: task.id,
+            taskId: task.id
           });
         });
       }
 
       // Add recents
-      const recentTaskIds = history
-        .slice()
-        .reverse()
-        .map(h => h.taskId)
-        .filter((id, index, self) => self.indexOf(id) === index)
-        .slice(0, 10);
-
-      const recentTasks = recentTaskIds
-        .map(id => tasks.find(t => t.id === id))
-        .filter(t => t && !treeProvider.isFavorite(t.id) && !treeProvider.isTaskbarPinned(t.id)) as TaskItemModel[];
+      const recentTasks = treeProvider.getRecentTasks(tasks);
 
       if (recentTasks.length > 0) {
         items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
@@ -1085,7 +1663,8 @@ export function activate(context: vscode.ExtensionContext) {
           items.push({
             label: `$(history) ${task.label}`,
             description: descriptionParts.join(' - '),
-            detail: task.id
+            detail: task.id,
+            taskId: task.id
           });
         });
       }
@@ -1106,18 +1685,15 @@ export function activate(context: vscode.ExtensionContext) {
         items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
         items.push({ label: 'npm scripts', kind: vscode.QuickPickItemKind.Separator });
         npmScriptTasks.forEach(task => {
-          const descriptionParts = [task.source];
+          const descriptionParts = [`${task.packageManager ?? 'npm'} script`];
           if (task.folderName) {
             descriptionParts.push(task.folderName);
-          }
-          const detailParts = [task.id];
-          if (task.workspacePath) {
-            detailParts.push(`Workspace: ${task.workspacePath}`);
           }
           items.push({
             label: `$(package) ${task.label}`,
             description: descriptionParts.join(' - '),
-            detail: detailParts.join(' | ')
+            detail: task.workspacePath ? `Workspace: ${task.workspacePath}` : undefined,
+            taskId: task.id
           });
         });
       }
@@ -1131,14 +1707,11 @@ export function activate(context: vscode.ExtensionContext) {
           if (task.folderName) {
             descriptionParts.push(task.folderName);
           }
-          const detailParts = [task.id];
-          if (task.workspacePath) {
-            detailParts.push(`Workspace: ${task.workspacePath}`);
-          }
           items.push({
             label: `$(symbol-event) ${task.label}`,
             description: descriptionParts.join(' - '),
-            detail: detailParts.join(' | ')
+            detail: task.workspacePath ? `Workspace: ${task.workspacePath}` : undefined,
+            taskId: task.id
           });
         });
       }
@@ -1155,7 +1728,8 @@ export function activate(context: vscode.ExtensionContext) {
           items.push({
             label: `$(play-circle) ${task.label}`,
             description: descriptionParts.join(' - '),
-            detail: task.id
+            detail: task.id,
+            taskId: task.id
           });
         });
       }
@@ -1164,9 +1738,8 @@ export function activate(context: vscode.ExtensionContext) {
         placeHolder: 'Select a task to run'
       });
 
-      if (selected && selected.detail) {
-        const taskId = selected.detail.split(' | ')[0]; // Extract task ID from detail
-        const task = tasks.find(t => t.id === taskId);
+      if (selected?.taskId) {
+        const task = tasks.find(t => t.id === selected.taskId);
         if (task) {
           await vscode.tasks.executeTask(task.vscodeTask);
         }
@@ -1176,47 +1749,29 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Task event listeners
   context.subscriptions.push(
-    vscode.tasks.onDidStartTaskProcess((e: vscode.TaskProcessStartEvent) => {
-      currentRunningTask = e.execution;
-      const task = e.execution.task;
-      const taskId = treeProvider.createId(task);
-
-      // Update status bar
-      statusBarItem.text = `$(terminal) Task: ${task.name}`;
-      statusBarItem.tooltip = `Running: ${task.name}\nClick to show terminal`;
-      statusBarItem.command = 'workbench.action.terminal.focus';
-      statusBarItem.show();
-
-      // Add to history (start)
-      treeProvider.addToHistory(taskId, task.name);
+    vscode.tasks.onDidStartTask(async (event: vscode.TaskStartEvent) => {
+      try {
+        await treeProvider.startTask(event.execution);
+        updateTaskStatus();
+      } catch (error) {
+        vscode.window.showErrorMessage(`Failed to record task start: ${error}`);
+      }
     })
   );
 
   context.subscriptions.push(
     vscode.tasks.onDidEndTaskProcess((e: vscode.TaskProcessEndEvent) => {
-      const task = e.execution.task;
-      const taskId = treeProvider.createId(task);
+      treeProvider.recordTaskExitCode(e.execution, e.exitCode);
+    })
+  );
 
-      // Update history with exit code
-      treeProvider.addToHistory(taskId, task.name, e.exitCode);
-
-      // Update/hide status bar
-      if (currentRunningTask === e.execution) {
-        if (e.exitCode === 0) {
-          statusBarItem.text = `$(check) Task: ${task.name}`;
-          statusBarItem.tooltip = 'Task completed successfully';
-        } else {
-          statusBarItem.text = `$(error) Task: ${task.name}`;
-          statusBarItem.tooltip = `Task failed with exit code ${e.exitCode}`;
-        }
-
-        // Hide after 5 seconds
-        setTimeout(() => {
-          if (currentRunningTask === e.execution) {
-            statusBarItem.hide();
-            currentRunningTask = undefined;
-          }
-        }, 5000);
+  context.subscriptions.push(
+    vscode.tasks.onDidEndTask(async event => {
+      try {
+        const completedEntry = await treeProvider.finishTask(event.execution);
+        updateTaskStatus(completedEntry);
+      } catch (error) {
+        vscode.window.showErrorMessage(`Failed to update task history: ${error}`);
       }
     })
   );
@@ -1230,9 +1785,18 @@ export function activate(context: vscode.ExtensionContext) {
   // Add to subscriptions
   context.subscriptions.push(treeView);
   context.subscriptions.push(statusBarItem);
+  context.subscriptions.push({
+    dispose: () => {
+      if (completionTimeout) {
+        clearTimeout(completionTimeout);
+      }
+      taskbarStatusBarItems.forEach(item => item.dispose());
+      taskbarStatusBarItems.clear();
+    }
+  });
+  return { treeProvider };
 }
 
 export function deactivate() {
   // Cleanup
 }
-

@@ -1,5 +1,22 @@
 # Change Log
 
+## [0.15.0] - 2026-11-04
+### Added
+- **Running tasks** — see active executions and stop or restart a task from the tree.
+- **Execution history** — see each run's result, exit code, completion time, and duration.
+- **Package manager support** — run scripts with npm, pnpm, Yarn, or Bun based on the package declaration or nearest lockfile.
+- **Workspace and package groups** — browse scripts by workspace and package, including packages with identically named scripts.
+- **Task definition navigation** — open a task's `package.json`, Ant `build.xml`, or workspace `tasks.json` when available.
+- **Automatic refresh and filtering** — refresh after relevant workspace files change, and clear the active filter from the view title.
+
+### Changed
+- **Task lists stay in sync** — apply source exclusions and favorites ordering consistently across the tree, Quick Pick, and pinned tasks.
+- **Quieter routine actions** — running, pinning, and favoriting tasks no longer trigger success popups.
+
+### Fixed
+- **Task identity in monorepos** — distinguish same-named scripts and targets in different packages, while migrating saved favorites, pins, and history where possible.
+- **Task commands** — pass npm script and Ant target names as shell arguments instead of interpolating them into a command line.
+
 ## [0.14.0] - 2026-04-10
 ### Added
 - Added configuration `taskdeck.excludeSources` (array of source names) to hide tasks by source (for example, `["extension"]` to hide extension-contributed tasks).

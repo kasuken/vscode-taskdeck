@@ -2,7 +2,7 @@
   "name": "taskdeck",
   "displayName": "TaskDeck",
   "description": "A control center to manage and launch VS Code tasks.",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "icon": "img/logo.png",
   "repository": {
     "type": "git",
@@ -110,6 +110,31 @@
         "command": "taskdeck.moveFavoriteDown",
         "title": "TaskDeck: Move Favorite Down",
         "icon": "$(arrow-down)"
+      },
+      {
+        "command": "taskdeck.clearFilter",
+        "title": "TaskDeck: Clear Filter",
+        "icon": "$(close)"
+      },
+      {
+        "command": "taskdeck.stopTask",
+        "title": "TaskDeck: Stop Running Task",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "taskdeck.restartTask",
+        "title": "TaskDeck: Restart Running Task",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "taskdeck.focusTaskTerminal",
+        "title": "TaskDeck: Focus Task Terminal",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "taskdeck.openTaskDefinition",
+        "title": "TaskDeck: Open Task Definition",
+        "icon": "$(go-to-file)"
       }
     ],
     "menus": {
@@ -122,6 +147,11 @@
         {
           "command": "taskdeck.setFilter",
           "when": "view == taskdeck.tasksView",
+          "group": "navigation"
+        },
+        {
+          "command": "taskdeck.clearFilter",
+          "when": "view == taskdeck.tasksView && taskdeck.hasFilter",
           "group": "navigation"
         }
       ],
@@ -165,6 +195,31 @@
           "command": "taskdeck.sendToTaskbar",
           "when": "view == taskdeck.tasksView && viewItem == favoriteTask",
           "group": "inline@5"
+        },
+        {
+          "command": "taskdeck.openTaskDefinition",
+          "when": "view == taskdeck.tasksView && viewItem == task",
+          "group": "1_taskdeck"
+        },
+        {
+          "command": "taskdeck.openTaskDefinition",
+          "when": "view == taskdeck.tasksView && viewItem == favoriteTask",
+          "group": "1_taskdeck"
+        },
+        {
+          "command": "taskdeck.stopTask",
+          "when": "view == taskdeck.tasksView && viewItem == runningTask",
+          "group": "inline@1"
+        },
+        {
+          "command": "taskdeck.restartTask",
+          "when": "view == taskdeck.tasksView && viewItem == runningTask",
+          "group": "inline@2"
+        },
+        {
+          "command": "taskdeck.focusTaskTerminal",
+          "when": "view == taskdeck.tasksView && viewItem == runningTask",
+          "group": "1_taskdeck"
         },
         {
           "command": "taskdeck.toggleFavorite",
@@ -225,6 +280,26 @@
         },
         {
           "command": "taskdeck.moveFavoriteDown",
+          "when": "false"
+        },
+        {
+          "command": "taskdeck.clearFilter",
+          "when": "taskdeck.hasFilter"
+        },
+        {
+          "command": "taskdeck.stopTask",
+          "when": "false"
+        },
+        {
+          "command": "taskdeck.restartTask",
+          "when": "false"
+        },
+        {
+          "command": "taskdeck.focusTaskTerminal",
+          "when": "false"
+        },
+        {
+          "command": "taskdeck.openTaskDefinition",
           "when": "false"
         }
       ]
