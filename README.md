@@ -21,6 +21,7 @@ TaskDeck provides a dedicated Activity Bar view container that brings all your V
    - Tree view showing all workspace tasks
    - Task information displayed: name, source (npm, shell, workspace, etc.), and folder (in multi-root workspaces)
    - One-click task execution
+   - Multi-select tasks to start or stop them together
    - Visual grouping: Favorites, Recent, and All Tasks
 
 2. **Favorites & Pinning**
@@ -70,6 +71,7 @@ TaskDeck provides a dedicated Activity Bar view container that brings all your V
 ### Running Tasks and History
 
 - Active executions appear in a **Running** group, including multiple concurrent runs.
+- Use Ctrl/Cmd-click to select multiple task rows, then use the play or stop action in the view title to run selected tasks or stop selected running tasks.
 - Stop or restart a running task from its row actions.
 - Focus the task's terminal from the running task menu. If VS Code does not expose a matching task terminal, TaskDeck focuses the active terminal.
 - History records one entry per run with its outcome, exit code, completion time, and duration.
@@ -118,6 +120,8 @@ TaskDeck provides a dedicated Activity Bar view container that brings all your V
 - `TaskDeck: Run Task` - Run a specific task (context menu)
 - `TaskDeck: Send to Taskbar` - Pin/unpin a task to the VS Code status bar for quick access
 - `TaskDeck: Stop Running Task` - Stop a selected running task
+- `TaskDeck: Run Selected Tasks` - Start all selected tasks
+- `TaskDeck: Stop Selected Tasks` - Stop all selected running tasks
 - `TaskDeck: Restart Running Task` - Restart a selected running task
 - `TaskDeck: Focus Task Terminal` - Focus the selected running task's terminal
 - `TaskDeck: Open Task Definition` - Open the source file for a task when available
