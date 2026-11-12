@@ -122,6 +122,16 @@
         "icon": "$(debug-stop)"
       },
       {
+        "command": "taskdeck.runSelectedTasks",
+        "title": "TaskDeck: Run Selected Tasks",
+        "icon": "$(play)"
+      },
+      {
+        "command": "taskdeck.stopSelectedTasks",
+        "title": "TaskDeck: Stop Selected Tasks",
+        "icon": "$(debug-stop)"
+      },
+      {
         "command": "taskdeck.restartTask",
         "title": "TaskDeck: Restart Running Task",
         "icon": "$(debug-restart)"
@@ -152,6 +162,16 @@
         {
           "command": "taskdeck.clearFilter",
           "when": "view == taskdeck.tasksView && taskdeck.hasFilter",
+          "group": "navigation"
+        },
+        {
+          "command": "taskdeck.runSelectedTasks",
+          "when": "view == taskdeck.tasksView && taskdeck.canRunSelection",
+          "group": "navigation"
+        },
+        {
+          "command": "taskdeck.stopSelectedTasks",
+          "when": "view == taskdeck.tasksView && taskdeck.canStopSelection",
           "group": "navigation"
         }
       ],
@@ -288,6 +308,14 @@
         },
         {
           "command": "taskdeck.stopTask",
+          "when": "false"
+        },
+        {
+          "command": "taskdeck.runSelectedTasks",
+          "when": "false"
+        },
+        {
+          "command": "taskdeck.stopSelectedTasks",
           "when": "false"
         },
         {

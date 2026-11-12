@@ -1241,7 +1241,8 @@ export function activate(context: vscode.ExtensionContext) {
   const dragAndDropController = new FavoriteDragAndDropController(treeProvider);
   const treeView = vscode.window.createTreeView('taskdeck.tasksView', {
     treeDataProvider: treeProvider,
-    dragAndDropController
+    dragAndDropController,
+    canSelectMany: true
   });
 
   // Status bar item
@@ -1350,6 +1351,67 @@ export function activate(context: vscode.ExtensionContext) {
     await vscode.commands.executeCommand('setContext', 'taskdeck.hasFilter', Boolean(filterText));
   }
 
+  async function updateSelectionContext(selection: readonly TaskTreeItem[]): Promise<void> {
+    const hasRunnableTasks = selection.some(item => item.taskModel !== undefined);
+    const hasRunningTasks = selection.some(item => item.execution !== undefined);
+    await Promise.all([
+      vscode.commands.executeCommand('setContext', 'taskdeck.canRunSelection', hasRunnableTasks),
+      vscode.commands.executeCommand('setContext', 'taskdeck.canStopSelection', hasRunningTasks)
+    ]);
+  }
+
+  async function runSelectedTasks(selection: readonly TaskTreeItem[] = treeView.selection): Promise<void> {
+    const selectedTasks = new Map<string, TaskItemModel>();
+    for (const item of selection) {
+      if (item.taskModel) {
+        selectedTasks.set(item.taskModel.id, item.taskModel);
+      }
+    }
+
+    if (selectedTasks.size === 0) {
+      vscode.window.showErrorMessage('Select one or more tasks to run.');
+      return;
+    }
+
+    const failedTasks: string[] = [];
+    for (const task of selectedTasks.values()) {
+      try {
+        await vscode.tasks.executeTask(task.vscodeTask);
+      } catch (error) {
+        console.error(`[TaskDeck] Failed to run task ${task.label}:`, error);
+        failedTasks.push(task.label);
+      }
+    }
+    if (failedTasks.length > 0) {
+      vscode.window.showErrorMessage(`Failed to run ${failedTasks.length} task(s): ${failedTasks.join(', ')}`);
+    }
+  }
+
+  function stopSelectedTasks(selection: readonly TaskTreeItem[] = treeView.selection): void {
+    const activeExecutions = new Set(treeProvider.getRunningTasks().map(task => task.execution));
+    const selectedExecutions = new Set(
+      selection
+        .map(item => item.execution)
+        .filter((execution): execution is vscode.TaskExecution => execution !== undefined && activeExecutions.has(execution))
+    );
+
+    if (selectedExecutions.size === 0) {
+      vscode.window.showErrorMessage('Select one or more running tasks to stop.');
+      return;
+    }
+
+    for (const execution of selectedExecutions) {
+      execution.terminate();
+    }
+  }
+
+  const selectionListener = treeView.onDidChangeSelection(event => {
+    void updateSelectionContext(event.selection).catch(error => {
+      console.error('Failed to update TaskDeck selection context:', error);
+    });
+  });
+  context.subscriptions.push(selectionListener);
+
   void updateFilterContext().catch(error => console.error('Failed to update filter context:', error));
 
   function scheduleTaskRefresh(uri?: vscode.Uri) {
@@ -1418,9 +1480,13 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('taskdeck.runTask', async (item?: TaskTreeItem) => {
+    vscode.commands.registerCommand('taskdeck.runTask', async (item?: TaskTreeItem | TaskTreeItem[]) => {
       try {
         console.log('[TaskDeck] runTask command invoked with item:', item);
+        if (Array.isArray(item)) {
+          await runSelectedTasks(item);
+          return;
+        }
         
         let taskModel: TaskItemModel | undefined;
         
@@ -1507,12 +1573,25 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('taskdeck.stopTask', (item?: TaskTreeItem) => {
+    vscode.commands.registerCommand('taskdeck.stopTask', (item?: TaskTreeItem | TaskTreeItem[]) => {
+      if (Array.isArray(item)) {
+        stopSelectedTasks(item);
+        return;
+      }
       if (!item?.execution) {
         vscode.window.showErrorMessage('No running task selected.');
         return;
       }
       item.execution.terminate();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('taskdeck.runSelectedTasks', async () => {
+      await runSelectedTasks();
+    }),
+    vscode.commands.registerCommand('taskdeck.stopSelectedTasks', () => {
+      stopSelectedTasks();
     })
   );
 
